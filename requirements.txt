@@ -1,0 +1,10 @@
+pandas==2.2.2
+openpyxl==3.1.2
+playwright==1.44.0
+python-dotenv==1.0.1
+requests==2.32.3
+schedule==1.2.2
+Jinja2==3.1.4
+python-dateutil==2.9.0
+numpy==1.26.4
+xlsxwriter==3.2.0
