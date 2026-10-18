@@ -247,37 +247,44 @@ const allUnits = () => S.properties.flatMap(p => p.units.map(u => ({ p, u })));
 const propById = id => S.properties.find(p => p.id === id);
 const isLeased = u => !!(u.tenant && u.tenant.trim());
 
-// Months of [start,end] that fall inside calendar year y (0–12)
-function monthsInYear(start, end, y) {
-  const s = start ? parseDate(start) : new Date(y, 0, 1);
-  const e = end ? parseDate(end) : new Date(y, 11, 31);
-  const a = Math.max(s, new Date(y, 0, 1)), b = Math.min(e, new Date(y, 11, 31));
+// Share (0–1) of calendar month m (0–11) of year y covered by [start,end]; empty dates are open-ended
+function monthShare(start, end, y, m) {
+  const first = new Date(y, m, 1), last = new Date(y, m + 1, 0), days = last.getDate();
+  const a = start ? Math.max(parseDate(start), first) : first;
+  const b = end ? Math.min(parseDate(end), last) : last;
   if (b < a) return 0;
-  return Math.min(12, Math.max(0, (b - a) / (864e5 * 30.4375)));
+  return Math.min(1, (Math.round((b - a) / 864e5) + 1) / days);
 }
-function unitAnnual(u, y) {
-  if (!isLeased(u)) return 0;
-  const m = (u.start || u.end) ? monthsInYear(u.start, u.end, y) : 12;
-  return (num(u.rent) + num(u.mgmtFee)) * m;
+const MONTHS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+const MONTH_NAMES = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'];
+// Rent / management fee for one month (amounts are entered per month)
+function unitMonth(u, y, m) {
+  if (!isLeased(u)) return { rent: 0, mgmt: 0 };
+  const f = monthShare(u.start, u.end, y, m);
+  return { rent: num(u.rent) * f, mgmt: num(u.mgmtFee) * f };
 }
-function recordAnnual(r, y) {
+const unitAnnual = (u, y) => MONTHS.reduce((s, m) => { const v = unitMonth(u, y, m); return s + v.rent + v.mgmt; }, 0);
+// Income / expense record for one month: one-time counts in its month, recurring is spread per month
+function recordMonth(r, y, m) {
   const per = FREQ_PER_YEAR[r.freq] ?? 0;
-  if (!per) { const d = parseDate(r.date); return d && d.getFullYear() === y ? num(r.amount) : 0; }
-  return num(r.amount) * per * monthsInYear(r.date, r.endDate, y) / 12;
+  if (!per) { const d = parseDate(r.date); return d && d.getFullYear() === y && d.getMonth() === m ? num(r.amount) : 0; }
+  // recurring records count whole months from the start month to the end month
+  const ym = y * 12 + m, ym0 = r.date ? parseDate(r.date).getFullYear() * 12 + parseDate(r.date).getMonth() : -Infinity;
+  const ym1 = r.endDate ? parseDate(r.endDate).getFullYear() * 12 + parseDate(r.endDate).getMonth() : Infinity;
+  return ym >= ym0 && ym <= ym1 ? num(r.amount) * per / 12 : 0;
 }
-function totals(y) {
-  const t = { area: 0, leasedArea: 0, parking: 0, units: 0, leased: 0, monthlyRent: 0, monthlyMgmt: 0, rentY: 0, otherY: 0, expY: 0, byProp: {} };
-  S.properties.forEach(p => t.byProp[p.id] = { inc: 0, exp: 0, rentM: 0, area: 0, leasedArea: 0 });
+const recordAnnual = (r, y) => MONTHS.reduce((s, m) => s + recordMonth(r, y, m), 0);
+function totals(y, mo) {
+  const t = { area: 0, leasedArea: 0, parking: 0, units: 0, leased: 0, mRent: 0, mMgmt: 0, mOther: 0, mExp: 0, rentY: 0, otherY: 0, expY: 0, byProp: {} };
+  S.properties.forEach(p => t.byProp[p.id] = { inc: 0, exp: 0, incM: 0, expM: 0, area: 0, leasedArea: 0 });
   allUnits().forEach(({ p, u }) => {
-    const a = num(u.area); t.area += a; t.parking += num(u.parking); t.units++; t.byProp[p.id].area += a;
-    if (isLeased(u)) {
-      t.leased++; t.leasedArea += a; t.byProp[p.id].leasedArea += a;
-      t.monthlyRent += num(u.rent); t.monthlyMgmt += num(u.mgmtFee); t.byProp[p.id].rentM += num(u.rent) + num(u.mgmtFee);
-    }
-    const ann = unitAnnual(u, y); t.rentY += ann; t.byProp[p.id].inc += ann;
+    const b = t.byProp[p.id], a = num(u.area); t.area += a; t.parking += num(u.parking); t.units++; b.area += a;
+    if (isLeased(u)) { t.leased++; t.leasedArea += a; b.leasedArea += a; }
+    const mv = unitMonth(u, y, mo); t.mRent += mv.rent; t.mMgmt += mv.mgmt; b.incM += mv.rent + mv.mgmt;
+    const ann = unitAnnual(u, y); t.rentY += ann; b.inc += ann;
   });
-  S.incomes.forEach(r => { const v = recordAnnual(r, y); t.otherY += v; if (t.byProp[r.propertyId]) t.byProp[r.propertyId].inc += v; });
-  S.expenses.forEach(r => { const v = recordAnnual(r, y); t.expY += v; if (t.byProp[r.propertyId]) t.byProp[r.propertyId].exp += v; });
+  S.incomes.forEach(r => { const v = recordAnnual(r, y), m = recordMonth(r, y, mo), b = t.byProp[r.propertyId]; t.otherY += v; t.mOther += m; if (b) { b.inc += v; b.incM += m; } });
+  S.expenses.forEach(r => { const v = recordAnnual(r, y), m = recordMonth(r, y, mo), b = t.byProp[r.propertyId]; t.expY += v; t.mExp += m; if (b) { b.exp += v; b.expM += m; } });
   return t;
 }
 // Weighted average lease expiry (years), weighted by monthly rent
@@ -317,7 +324,7 @@ function statusPill(dateStr) {
 
 /* ============================== Tabs ============================== */
 let curTab = (location.hash || '#dashboard').slice(1);
-let dashYear = new Date().getFullYear();
+let dashYear = new Date().getFullYear(), dashMonth = new Date().getMonth();
 let propFilter = '';
 function showTab(t) {
   if (!document.getElementById('tab-' + t)) t = 'dashboard';
@@ -348,18 +355,21 @@ function barChart(rows, opts = {}) {
     </div>`).join('') + '</div>';
 }
 function renderDashboard() {
-  const y = dashYear, t = totals(y), w = wale(), alerts = activeAlerts();
+  const y = dashYear, mo = dashMonth, t = totals(y, mo), w = wale(), alerts = activeAlerts();
   const occ = t.area ? t.leasedArea / t.area * 100 : 0;
   const incY = t.rentY + t.otherY, noi = incY - t.expY;
+  const incM = t.mRent + t.mMgmt + t.mOther, netM = incM - t.mExp, monthLbl = MONTH_NAMES[mo] + ' ' + y;
+  const monthly = MONTHS.map(m => { const x = totals(y, m); return { m, rent: x.mRent, mgmt: x.mMgmt, other: x.mOther, exp: x.mExp, net: x.mRent + x.mMgmt + x.mOther - x.mExp }; });
+  const mRows = monthly.map(r => ({ label: MONTH_NAMES[r.m], values: [r.rent + r.mgmt + r.other, r.exp] }));
   const years = []; for (let i = new Date().getFullYear() - 3; i <= new Date().getFullYear() + 3; i++) years.push(i);
 
-  const propRows = S.properties.map(p => ({ label: p.name, values: [t.byProp[p.id].rentM] })).sort((a, b) => b.values[0] - a.values[0]);
+  const propRows = S.properties.map(p => ({ label: p.name, values: [t.byProp[p.id].incM] })).sort((a, b) => b.values[0] - a.values[0]);
   const ieRows = S.properties.map(p => ({ label: p.name, values: [t.byProp[p.id].inc, t.byProp[p.id].exp] }));
   const expCat = {}; S.expenses.forEach(r => { const v = recordAnnual(r, y); if (v) expCat[r.type] = (expCat[r.type] || 0) + v; });
   const expRows = Object.entries(expCat).map(([k, v]) => ({ label: k, values: [v] })).sort((a, b) => b.values[0] - a.values[0]);
   const incCat = { 'שכירות + דמי ניהול בהסכם': t.rentY }; S.incomes.forEach(r => { const v = recordAnnual(r, y); if (v) incCat[r.type] = (incCat[r.type] || 0) + v; });
   const incRows = Object.entries(incCat).filter(([, v]) => v).map(([k, v]) => ({ label: k, values: [v] })).sort((a, b) => b.values[0] - a.values[0]);
-  const payM = {}; allUnits().forEach(({ u }) => { if (isLeased(u)) payM[u.payMethod] = (payM[u.payMethod] || 0) + num(u.rent); });
+  const payM = {}; allUnits().forEach(({ u }) => { const v = unitMonth(u, y, mo); if (v.rent + v.mgmt) payM[u.payMethod] = (payM[u.payMethod] || 0) + v.rent + v.mgmt; });
   const payRows = Object.entries(payM).map(([k, v]) => ({ label: k, values: [v] })).sort((a, b) => b.values[0] - a.values[0]);
   const expiry = {}; allUnits().forEach(({ u }) => { if (isLeased(u) && u.end) { const yy = parseDate(u.end).getFullYear(); expiry[yy] = (expiry[yy] || 0) + num(u.area); } });
   const expiryRows = Object.keys(expiry).sort().map(k => ({ label: String(k), values: [expiry[k]] }));
@@ -370,29 +380,35 @@ function renderDashboard() {
   $('#tab-dashboard').innerHTML = `
   <div class="row" style="margin-bottom:12px">
     <h2 style="margin:0;font-size:18px">סיכום תיק הנכסים</h2><div class="spacer"></div>
+    <label style="margin:0">חודש</label>
+    <select style="width:auto" onchange="dashMonth=+this.value;renderDashboard()">${MONTH_NAMES.map((n, i) => `<option value="${i}" ${i === mo ? 'selected' : ''}>${n}</option>`).join('')}</select>
     <label style="margin:0">שנה</label>
-    <select style="width:auto" onchange="dashYear=+this.value;renderDashboard()">${years.map(v => `<option ${v === y ? 'selected' : ''}>${v}</option>`).join('')}</select>
+    <select style="width:auto" onchange="dashYear=+this.value;renderAll()">${years.map(v => `<option ${v === y ? 'selected' : ''}>${v}</option>`).join('')}</select>
   </div>
   <div class="kpis">
     <div class="kpi"><div class="k">נכסים / יחידות</div><div class="v">${S.properties.length} / ${t.units}</div><div class="d">${t.leased} יחידות מושכרות</div></div>
     <div class="kpi"><div class="k">שטח כולל</div><div class="v">${fmt(t.area)} מ״ר</div><div class="d">${fmt(t.parking)} חניות</div></div>
     <div class="kpi"><div class="k">תפוסה (לפי שטח)</div><div class="v">${occ.toFixed(1)}%</div>
       <div class="meter" style="margin-top:6px" data-tip="מושכר ${fmt(t.leasedArea)} מ״ר · פנוי ${fmt(t.area - t.leasedArea)} מ״ר"><div style="width:${occ}%;background:var(--s1)"></div></div></div>
-    <div class="kpi"><div class="k">שכ״ד חודשי (לפני מע״מ)</div><div class="v">${ils(t.monthlyRent)}</div><div class="d">+ דמי ניהול ${ils(t.monthlyMgmt)}</div></div>
+    <div class="kpi"><div class="k">הכנסה חודשית – ${monthLbl}</div><div class="v">${ils(incM)}</div><div class="d">שכ״ד ${ils(t.mRent)} · ניהול ${ils(t.mMgmt)} · נוספות ${ils(t.mOther)}</div></div>
+    <div class="kpi"><div class="k">נטו חודשי – ${monthLbl}</div><div class="v">${ils(netM)}</div><div class="d">הוצאות החודש ${ils(t.mExp)}</div></div>
     <div class="kpi"><div class="k">הכנסות ${y}</div><div class="v">${fmtShort(incY)}</div><div class="d">מתוכן נוספות ${fmtShort(t.otherY)}</div></div>
     <div class="kpi"><div class="k">הוצאות ${y}</div><div class="v">${fmtShort(t.expY)}</div><div class="d">NOI: ${fmtShort(noi)}</div></div>
     <div class="kpi"><div class="k">משך שכירות ממוצע (WALE)</div><div class="v">${w === null ? '—' : w.toFixed(1) + ' שנים'}</div><div class="d">משוקלל לפי שכ״ד</div></div>
     <div class="kpi"><div class="k">התראות פעילות</div><div class="v" style="color:${alerts.length ? 'var(--crit)' : 'var(--good-ink)'}">${alerts.length ? '⚠ ' : '✓ '}${alerts.length}</div><div class="d">בטווח ${S.settings.reminderDays} ימים</div></div>
   </div>
   <div class="charts">
-    <div class="card"><h2>הכנסה חודשית לפי נכס</h2>${barChart(propRows)}</div>
+    <div class="card"><h2>הכנסה חודשית לפי נכס – ${monthLbl}</h2>${barChart(propRows)}</div>
+    <div class="card"><h2>הכנסות מול הוצאות לפי חודש – ${y}</h2>
+      <div class="legend"><span><i style="background:var(--s1)"></i>הכנסות</span><span><i style="background:var(--s2)"></i>הוצאות</span></div>
+      ${barChart(mRows, { names: ['הכנסות', 'הוצאות'] })}</div>
     <div class="card"><h2>הכנסות מול הוצאות לפי נכס – ${y}</h2>
       <div class="legend"><span><i style="background:var(--s1)"></i>הכנסות</span><span><i style="background:var(--s2)"></i>הוצאות</span></div>
       ${barChart(ieRows, { names: ['הכנסות', 'הוצאות'] })}</div>
     <div class="card"><h2>תפוסה לפי נכס (% משטח)</h2>${barChart(occRows, { fmt: pct })}</div>
     <div class="card"><h2>פילוח הכנסות – ${y}</h2>${barChart(incRows)}</div>
     <div class="card"><h2>הוצאות לפי קטגוריה – ${y}</h2>${barChart(expRows)}</div>
-    <div class="card"><h2>שכ״ד חודשי לפי אמצעי תשלום</h2>${barChart(payRows)}</div>
+    <div class="card"><h2>הכנסה חודשית לפי אמצעי תשלום – ${monthLbl}</h2>${barChart(payRows)}</div>
     <div class="card"><h2>שטח מושכר לפי שנת סיום הסכם</h2>${barChart(expiryRows, { fmt: sqm })}</div>
     <div class="card"><h2>מועדים קרובים (12 חודשים)</h2>
       ${upcoming.length ? `<div class="tbl-wrap"><table><tr><th>תאריך</th><th>אירוע</th><th>נכס / שוכר</th></tr>
@@ -400,10 +416,15 @@ function renderDashboard() {
     </div>
   </div>
   <div class="card"><h2>טבלת סיכום לפי נכס – ${y}</h2><div class="tbl-wrap"><table>
-    <tr><th>נכס</th><th class="num">יחידות</th><th class="num">שטח מ״ר</th><th class="num">תפוסה</th><th class="num">הכנסה חודשית</th><th class="num">הכנסות שנתיות</th><th class="num">הוצאות שנתיות</th><th class="num">NOI</th></tr>
-    ${S.properties.map(p => { const b = t.byProp[p.id]; return `<tr><td>${esc(p.name)}</td><td class="num">${p.units.length}</td><td class="num">${fmt(b.area)}</td><td class="num">${b.area ? (b.leasedArea / b.area * 100).toFixed(0) : 0}%</td><td class="num">${ils(b.rentM)}</td><td class="num">${ils(b.inc)}</td><td class="num">${ils(b.exp)}</td><td class="num">${ils(b.inc - b.exp)}</td></tr>`; }).join('')}
-    <tfoot><tr><td>סה״כ</td><td class="num">${t.units}</td><td class="num">${fmt(t.area)}</td><td class="num">${occ.toFixed(0)}%</td><td class="num">${ils(t.monthlyRent + t.monthlyMgmt)}</td><td class="num">${ils(incY)}</td><td class="num">${ils(t.expY)}</td><td class="num">${ils(noi)}</td></tr></tfoot>
-  </table></div><div class="muted" style="margin-top:6px;font-size:12px">הכנסות ללא שיוך לנכס / הוצאות כלליות נכללות בסה״כ בלבד.</div></div>`;
+    <tr><th>נכס</th><th class="num">יחידות</th><th class="num">שטח מ״ר</th><th class="num">תפוסה</th><th class="num">הכנסה ${MONTH_NAMES[mo]}</th><th class="num">הכנסות שנתיות</th><th class="num">הוצאות שנתיות</th><th class="num">NOI</th></tr>
+    ${S.properties.map(p => { const b = t.byProp[p.id]; return `<tr><td>${esc(p.name)}</td><td class="num">${p.units.length}</td><td class="num">${fmt(b.area)}</td><td class="num">${b.area ? (b.leasedArea / b.area * 100).toFixed(0) : 0}%</td><td class="num">${ils(b.incM)}</td><td class="num">${ils(b.inc)}</td><td class="num">${ils(b.exp)}</td><td class="num">${ils(b.inc - b.exp)}</td></tr>`; }).join('')}
+    <tfoot><tr><td>סה״כ</td><td class="num">${t.units}</td><td class="num">${fmt(t.area)}</td><td class="num">${occ.toFixed(0)}%</td><td class="num">${ils(incM)}</td><td class="num">${ils(incY)}</td><td class="num">${ils(t.expY)}</td><td class="num">${ils(noi)}</td></tr></tfoot>
+  </table></div><div class="muted" style="margin-top:6px;font-size:12px">הכנסות ללא שיוך לנכס / הוצאות כלליות נכללות בסה״כ בלבד.</div></div>
+  <div class="card"><h2>פירוט חודשי – ${y}</h2><div class="tbl-wrap"><table>
+    <tr><th>חודש</th><th class="num">שכ״ד</th><th class="num">דמי ניהול</th><th class="num">הכנסות נוספות</th><th class="num">סה״כ הכנסות</th><th class="num">הוצאות</th><th class="num">נטו</th></tr>
+    ${monthly.map(r => `<tr${r.m === mo ? ' style="font-weight:600"' : ''}><td>${MONTH_NAMES[r.m]}</td><td class="num">${ils(r.rent)}</td><td class="num">${ils(r.mgmt)}</td><td class="num">${ils(r.other)}</td><td class="num">${ils(r.rent + r.mgmt + r.other)}</td><td class="num">${ils(r.exp)}</td><td class="num">${ils(r.net)}</td></tr>`).join('')}
+    <tfoot><tr><td>סה״כ ${y}</td><td class="num">${ils(monthly.reduce((s, r) => s + r.rent, 0))}</td><td class="num">${ils(monthly.reduce((s, r) => s + r.mgmt, 0))}</td><td class="num">${ils(t.otherY)}</td><td class="num">${ils(incY)}</td><td class="num">${ils(t.expY)}</td><td class="num">${ils(noi)}</td></tr></tfoot>
+  </table></div><div class="muted" style="margin-top:6px;font-size:12px">שכ״ד ודמי ניהול נספרים רק בחודשים שבין תחילת לסיום ההסכם (חודש חלקי – יחסי). הכנסה/הוצאה רבעונית או שנתית מחולקת לחודשים.</div></div>`;
 }
 
 /* ============================== Properties ============================== */
@@ -496,7 +517,7 @@ function editUnit(pid, id) {
     ${field('שם השוכר (ריק = פנוי)', 'tenant', u.tenant)}${field('ח.פ / ת.ז', 'tenantId', u.tenantId)}${field('איש קשר', 'contact', u.contact)}${field('טלפון', 'phone', u.phone, 'tel')}${field('מייל', 'email', u.email, 'email')}
   </div></fieldset>
   <fieldset><legend>כספים ותשלום</legend><div class="grid g4">
-    ${field('שכ״ד חודשי ₪ (לפני מע״מ)', 'rent', u.rent, 'number', 'min="0" step="any"')}${field('דמי ניהול חודשי ₪', 'mgmtFee', u.mgmtFee, 'number', 'min="0" step="any"')}
+    ${field('שכ״ד לחודש ₪ (לפני מע״מ, גם אם משולם רבעוני/שנתי)', 'rent', u.rent, 'number', 'min="0" step="any"')}${field('דמי ניהול חודשי ₪', 'mgmtFee', u.mgmtFee, 'number', 'min="0" step="any"')}
     <div style="align-self:end">${chk('צמוד למדד', 'indexed', u.indexed)}</div>${field('מדד בסיס / הערה', 'indexBase', u.indexBase)}
     ${sel('אמצעי תשלום', 'payMethod', u.payMethod, PAY_METHODS)}${sel('תדירות תשלום', 'payFreq', u.payFreq, PAY_FREQ)}${field('יום תשלום בחודש', 'payDay', u.payDay)}
     ${field('תאריך הצ׳ק האחרון', 'chequesEnd', u.chequesEnd, 'date')}${field('בנק / פרטי צ׳קים', 'chequesBank', u.chequesBank)}
