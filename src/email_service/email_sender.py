@@ -88,6 +88,16 @@ class EmailService:
         )
         return self._send(to, subject, body_html, body_text)
 
+    def send_custom(
+        self,
+        subject: str,
+        body_html: str,
+        body_text: str,
+        recipient: Optional[str] = None,
+    ) -> bool:
+        """Send an arbitrary email (defaults to the renewal recipient)."""
+        return self._send(recipient or self.renewal_recipient, subject, body_html, body_text)
+
     # ------------------------------------------------------------------
     # Core send method
     # ------------------------------------------------------------------

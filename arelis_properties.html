@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ניהול נכסים – ארליס</title>
+<style>
+:root{
+  color-scheme: light;
+  --page:#f4f4f1; --surface:#fcfcfb; --surface-2:#f0efec;
+  --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --line:#e1e0d9; --axis:#c3c2b7; --ring:rgba(11,11,11,.10);
+  --accent:#2a78d6; --accent-ink:#fff;
+  --s1:#2a78d6; --s2:#eb6834;
+  --good:#0ca30c; --good-ink:#006300; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b;
+  --warn-bg:#fff4dc; --crit-bg:#fde8e8; --good-bg:#e6f6e6;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --page:#0d0d0d; --surface:#1a1a19; --surface-2:#262624;
+    --ink:#f0efec; --ink-2:#c3c2b7; --muted:#898781;
+    --line:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+    --accent:#3987e5; --s1:#3987e5; --s2:#d95926; --good-ink:#0ca30c;
+    --warn-bg:#3a2e10; --crit-bg:#3a1717; --good-bg:#12301a;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --page:#0d0d0d; --surface:#1a1a19; --surface-2:#262624;
+  --ink:#f0efec; --ink-2:#c3c2b7; --muted:#898781;
+  --line:#2c2c2a; --axis:#383835; --ring:rgba(255,255,255,.10);
+  --accent:#3987e5; --s1:#3987e5; --s2:#d95926; --good-ink:#0ca30c;
+  --warn-bg:#3a2e10; --crit-bg:#3a1717; --good-bg:#12301a;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",Arial,sans-serif;font-size:14px;line-height:1.45}
+header{background:var(--surface);border-bottom:1px solid var(--line);padding:14px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+header h1{font-size:18px;margin:0}
+header .sub{color:var(--muted);font-size:13px}
+nav{display:flex;gap:4px;overflow-x:auto;padding:0 16px;background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+nav button{background:none;border:0;border-bottom:3px solid transparent;padding:12px 14px;font:inherit;color:var(--ink-2);cursor:pointer;white-space:nowrap}
+nav button.active{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+.badge{display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:var(--crit);color:#fff;font-size:11px;text-align:center;margin-inline-start:4px}
+main{max-width:1280px;margin:0 auto;padding:16px}
+.tab{display:none}.tab.active{display:block}
+.card{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:16px;margin-bottom:16px}
+.card h2{font-size:16px;margin:0 0 12px}
+.card h3{font-size:14px;margin:0 0 10px;color:var(--ink-2)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.spacer{flex:1}
+button.btn,.btn{font:inherit;border:1px solid var(--ring);background:var(--surface-2);color:var(--ink);border-radius:7px;padding:7px 12px;cursor:pointer;text-decoration:none;display:inline-block}
+.btn:hover{border-color:var(--axis)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.btn.danger{color:var(--crit)}
+.btn.sm{padding:3px 8px;font-size:12px}
+input,select,textarea{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--axis);border-radius:6px;padding:6px 8px;width:100%}
+textarea{min-height:60px;resize:vertical}
+label{display:block;font-size:12px;color:var(--ink-2);margin-bottom:3px}
+.grid{display:grid;gap:12px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.g4{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+.chk{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink)}
+.chk input{width:auto}
+fieldset{border:1px solid var(--line);border-radius:8px;padding:12px;margin:0 0 12px}
+legend{padding:0 6px;font-weight:600;font-size:13px}
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;vertical-align:top}
+th{color:var(--ink-2);font-weight:600;background:var(--surface-2);white-space:nowrap}
+td.num,th.num{font-variant-numeric:tabular-nums;text-align:left;white-space:nowrap}
+tfoot td{font-weight:600;background:var(--surface-2)}
+.muted{color:var(--muted)}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;white-space:nowrap}
+.pill.crit{background:var(--crit-bg);color:var(--crit)}
+.pill.warn{background:var(--warn-bg);color:var(--ink)}
+.pill.good{background:var(--good-bg);color:var(--good-ink)}
+.pill.neutral{background:var(--surface-2);color:var(--ink-2)}
+.prop-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:10px}
+.prop-head h2{margin:0}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:14px}
+.kpi .k{font-size:12px;color:var(--ink-2)}
+.kpi .v{font-size:24px;font-weight:600;margin-top:4px}
+.kpi .d{font-size:12px;color:var(--muted)}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px}
+@media(max-width:480px){.charts{grid-template-columns:1fr}}
+.bars{display:flex;flex-direction:column;gap:6px}
+.bar-row{display:grid;grid-template-columns:minmax(90px,30%) 1fr auto;gap:8px;align-items:center;font-size:12px;position:relative}
+.bar-row .lbl{color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar-row .val{color:var(--ink);font-variant-numeric:tabular-nums;min-width:70px;text-align:left}
+.track{display:flex;flex-direction:column;gap:2px}
+.bar{height:12px;border-radius:0 4px 4px 0;min-width:1px;transition:opacity .15s}
+[dir=rtl] .bar{border-radius:4px 0 0 4px}
+.bar.s1{background:var(--s1)}.bar.s2{background:var(--s2)}
+.bar-row:hover .bar{opacity:.8}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--ink-2);margin-bottom:8px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-inline-end:5px;vertical-align:-1px}
+.meter{height:14px;background:var(--surface-2);border-radius:7px;overflow:hidden;display:flex;gap:2px}
+.meter>div{height:100%}
+#tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--surface);padding:6px 9px;border-radius:6px;font-size:12px;z-index:50;display:none;max-width:260px}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:flex-start;justify-content:center;z-index:40;overflow-y:auto;padding:24px 12px}
+.modal-bg.open{display:flex}
+.modal{background:var(--surface);border-radius:12px;width:100%;max-width:860px;padding:18px;border:1px solid var(--ring)}
+.modal h2{margin:0 0 14px;font-size:17px}
+.modal .actions{display:flex;gap:8px;justify-content:flex-start;margin-top:14px;position:sticky;bottom:0;background:var(--surface);padding-top:10px}
+.sec-row{display:grid;grid-template-columns:1.3fr 1fr 1fr 1.5fr auto;gap:6px;margin-bottom:6px}
+@media(max-width:600px){.sec-row{grid-template-columns:1fr 1fr}}
+.alert-item{display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.empty{color:var(--muted);padding:12px 0}
+.drop{border:2px dashed var(--axis);border-radius:10px;padding:18px;text-align:center;color:var(--ink-2)}
+@media print{nav,header .row,.btn{display:none!important}.tab{display:block!important}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1 id="companyTitle">ארליס החזקות בע״מ</h1>
+    <div class="sub">מערכת ניהול נכסי נדל״ן מסחרי</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="row">
+    <button class="btn sm" onclick="exportJSON()">⬇ גיבוי</button>
+    <button class="btn sm" onclick="toggleTheme()">🌓</button>
+  </div>
+</header>
+<nav id="nav">
+  <button data-tab="dashboard">דשבורד</button>
+  <button data-tab="properties">נכסים ושוכרים</button>
+  <button data-tab="finance">הכנסות והוצאות</button>
+  <button data-tab="invoices">חשבוניות</button>
+  <button data-tab="alerts">התראות <span id="alertBadge"></span></button>
+  <button data-tab="settings">הגדרות</button>
+</nav>
+<main>
+  <section class="tab" id="tab-dashboard"></section>
+  <section class="tab" id="tab-properties"></section>
+  <section class="tab" id="tab-finance"></section>
+  <section class="tab" id="tab-invoices"></section>
+  <section class="tab" id="tab-alerts"></section>
+  <section class="tab" id="tab-settings"></section>
+</main>
+<div class="modal-bg" id="modalBg"><div class="modal" id="modal"></div></div>
+<div id="tip"></div>
+
+<script>
+/* ============================== Constants ============================== */
+const STORE_KEY = 'arelis_pm_v1';
+const PAY_METHODS = ['העברה בנקאית','צ׳קים','הוראת קבע','מזומן','כרטיס אשראי','אחר'];
+const PAY_FREQ = ['חודשי','רבעוני','חצי שנתי','שנתי'];
+const USES = ['משרדים','חנות','מסחר','קניון','מחסן','חניה','אחר'];
+const SEC_TYPES = ['ערבות בנקאית','צ׳ק ביטחון','פיקדון כספי','שטר חוב','ערבות אישית','ערבות חברה אם','פוליסת ביטוח','אחר'];
+const INCOME_TYPES = ['דמי ניהול','סולארי','חניה','שילוט','אנטנה','החזר הוצאות','אחר'];
+const EXPENSE_TYPES = ['שיפוץ','ניהול','תחזוקה','ארנונה','ביטוח','חשמל/מים','עמלות תיווך','משפטי','מיסים','מימון','אחר'];
+const FREQS = ['חד פעמי','חודשי','רבעוני','שנתי'];
+const FREQ_PER_YEAR = {'חד פעמי':0,'חודשי':12,'רבעוני':4,'חצי שנתי':2,'שנתי':1};
+
+/* ============================== Helpers ============================== */
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = v => { const n = parseFloat(String(v ?? '').replace(/,/g,'')); return isFinite(n) ? n : 0; };
+const fmt = n => Math.round(n).toLocaleString('he-IL');
+const ils = n => '₪' + fmt(n);
+const fmtShort = n => Math.abs(n) >= 1e6 ? '₪' + (n/1e6).toFixed(2) + 'M' : Math.abs(n) >= 1e3 ? '₪' + Math.round(n/1e3) + 'K' : ils(n);
+const parseDate = s => s ? new Date(s + 'T00:00:00') : null;
+const fmtDate = s => { const d = parseDate(s); return d ? d.toLocaleDateString('he-IL') : '—'; };
+const today = () => { const d = new Date(); d.setHours(0,0,0,0); return d; };
+const daysUntil = s => { const d = parseDate(s); return d ? Math.round((d - today()) / 864e5) : null; };
+
+/* ============================== Data ============================== */
+function newUnit(o = {}) {
+  return Object.assign({
+    id: uid(), name: '', floor: '', area: 0, parking: 0, storage: false, storageArea: 0, use: 'משרדים',
+    tenant: '', tenantId: '', contact: '', phone: '', email: '',
+    rent: 0, mgmtFee: 0, indexed: false, indexBase: '',
+    payMethod: 'העברה בנקאית', payFreq: 'חודשי', payDay: '', chequesEnd: '', chequesBank: '',
+    signDate: '', start: '', end: '',
+    hasOption: false, optionPeriod: '', optionEnd: '', optionNotice: '',
+    securities: [], notes: ''
+  }, o);
+}
+function newProperty(o = {}) {
+  return Object.assign({ id: uid(), name: '', address: '', city: '', ownership: 100, notes: '', units: [] }, o);
+}
+function seed() {
+  const P = (name, address, city, units, notes='') => newProperty({ name, address, city, notes, units: units.map(u => newUnit(u)) });
+  return {
+    version: 1,
+    settings: { company: 'ארליס החזקות בע״מ', email: 'ariel.abash@gmail.com', reminderDays: 30, vat: 18 },
+    properties: [
+      P('אימבר 14', 'אימבר 14', '', [{ name: 'משרדים', area: 215, parking: 8 }]),
+      P('בבסר 2 בני ברק', 'בבסר 2', 'בני ברק', [
+        { name: 'קומה 5 – יחידה A', floor: '5', area: 384, parking: 6, storage: true },
+        { name: 'קומה 5 – יחידה B', floor: '5', area: 130, parking: 3 },
+        { name: 'קומה 5 – יחידה C', floor: '5', area: 111, parking: 3 },
+        { name: 'קומה 6', floor: '6', area: 384, parking: 4 },
+        { name: 'חניות + מחסן', area: 0, parking: 0, storage: true, use: 'חניה' }
+      ]),
+      P('אריאל שרון 4', 'אריאל שרון 4', '', [{ name: 'קומה 13', floor: '13', area: 184, parking: 3 }]),
+      P('קניון ערי החוף', 'סחרוב 19', 'ראשון לציון', [{ name: 'קניון ערי החוף', area: 1003, use: 'קניון' }]),
+      P('שדרות ירושלים 136 נתיבות', 'שדרות ירושלים 136', 'נתיבות', [
+        { name: 'סופר פארם', area: 650, use: 'חנות', tenant: 'סופר פארם' },
+        { name: 'בנק פאגי', area: 250, use: 'חנות', tenant: 'בנק פאגי' }
+      ]),
+      P('הרצל 182 רחובות', 'הרצל 182', 'רחובות', [{ name: 'יחידה', area: 581, use: 'מסחר' }]),
+      P('פלמ״ח 100 צפת', 'פלמ״ח 100', 'צפת', [
+        { name: 'לשכת הבריאות', area: 944, tenant: 'לשכת הבריאות' },
+        { name: 'ביטוח לאומי', area: 900, tenant: 'ביטוח לאומי', notes: 'שטח משוער' }
+      ]),
+      P('החרושת 27 כרמיאל', 'החרושת 27', 'כרמיאל', [
+        { name: 'יחידה 1', area: 230 },
+        { name: 'יחידה 2', area: 250 },
+        { name: 'יחידה 3', area: 1185, parking: 35, notes: '35 חניות בנכס' }
+      ]),
+      P('IWAY – שדרות ההסתדרות 272 חיפה', 'שדרות ההסתדרות 272', 'חיפה', [
+        { name: 'חנות 1', area: 85, use: 'חנות' },
+        { name: 'חנות 2', area: 85, use: 'חנות' },
+        { name: 'משרדים', area: 850, use: 'משרדים' }
+      ])
+    ],
+    incomes: [], expenses: []
+  };
+}
+function load() { try { const r = localStorage.getItem(STORE_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; } }
+let S = load() || seed();
+function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) { alert('שגיאה בשמירה: ' + e.message); } renderAll(); }
+
+/* ---------- IndexedDB for invoice files ---------- */
+let dbP = null;
+function db() {
+  if (dbP) return dbP;
+  dbP = new Promise((res, rej) => {
+    const r = indexedDB.open('arelis_files', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('files');
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+  return dbP;
+}
+async function fileOp(mode, fn) { const d = await db(); return new Promise((res, rej) => { const t = d.transaction('files', mode); const q = fn(t.objectStore('files')); t.oncomplete = () => res(q && q.result); t.onerror = () => rej(t.error); }); }
+const putFile = (id, blob) => fileOp('readwrite', s => s.put(blob, id));
+const getFile = id => fileOp('readonly', s => s.get(id));
+const delFile = id => fileOp('readwrite', s => s.delete(id));
+
+/* ============================== Calculations ============================== */
+const allUnits = () => S.properties.flatMap(p => p.units.map(u => ({ p, u })));
+const propById = id => S.properties.find(p => p.id === id);
+const isLeased = u => !!(u.tenant && u.tenant.trim());
+
+// Months of [start,end] that fall inside calendar year y (0–12)
+function monthsInYear(start, end, y) {
+  const s = start ? parseDate(start) : new Date(y, 0, 1);
+  const e = end ? parseDate(end) : new Date(y, 11, 31);
+  const a = Math.max(s, new Date(y, 0, 1)), b = Math.min(e, new Date(y, 11, 31));
+  if (b < a) return 0;
+  return Math.min(12, Math.max(0, (b - a) / (864e5 * 30.4375)));
+}
+function unitAnnual(u, y) {
+  if (!isLeased(u)) return 0;
+  const m = (u.start || u.end) ? monthsInYear(u.start, u.end, y) : 12;
+  return (num(u.rent) + num(u.mgmtFee)) * m;
+}
+function recordAnnual(r, y) {
+  const per = FREQ_PER_YEAR[r.freq] ?? 0;
+  if (!per) { const d = parseDate(r.date); return d && d.getFullYear() === y ? num(r.amount) : 0; }
+  return num(r.amount) * per * monthsInYear(r.date, r.endDate, y) / 12;
+}
+function totals(y) {
+  const t = { area: 0, leasedArea: 0, parking: 0, units: 0, leased: 0, monthlyRent: 0, monthlyMgmt: 0, rentY: 0, otherY: 0, expY: 0, byProp: {} };
+  S.properties.forEach(p => t.byProp[p.id] = { inc: 0, exp: 0, rentM: 0, area: 0, leasedArea: 0 });
+  allUnits().forEach(({ p, u }) => {
+    const a = num(u.area); t.area += a; t.parking += num(u.parking); t.units++; t.byProp[p.id].area += a;
+    if (isLeased(u)) {
+      t.leased++; t.leasedArea += a; t.byProp[p.id].leasedArea += a;
+      t.monthlyRent += num(u.rent); t.monthlyMgmt += num(u.mgmtFee); t.byProp[p.id].rentM += num(u.rent) + num(u.mgmtFee);
+    }
+    const ann = unitAnnual(u, y); t.rentY += ann; t.byProp[p.id].inc += ann;
+  });
+  S.incomes.forEach(r => { const v = recordAnnual(r, y); t.otherY += v; if (t.byProp[r.propertyId]) t.byProp[r.propertyId].inc += v; });
+  S.expenses.forEach(r => { const v = recordAnnual(r, y); t.expY += v; if (t.byProp[r.propertyId]) t.byProp[r.propertyId].exp += v; });
+  return t;
+}
+// Weighted average lease expiry (years), weighted by monthly rent
+function wale() {
+  let w = 0, s = 0;
+  allUnits().forEach(({ u }) => { const d = daysUntil(u.end); if (isLeased(u) && d !== null && d > 0 && num(u.rent) > 0) { w += num(u.rent); s += num(u.rent) * d / 365; } });
+  return w ? s / w : null;
+}
+
+/* ---------- Alerts ---------- */
+function collectEvents() {
+  const ev = [];
+  allUnits().forEach(({ p, u }) => {
+    const base = { p, u, who: u.tenant || u.name };
+    if (u.end) ev.push({ ...base, kind: 'סיום הסכם', date: u.end });
+    if (u.chequesEnd) ev.push({ ...base, kind: 'סיום צ׳קים', date: u.chequesEnd });
+    if (u.hasOption && u.optionNotice) ev.push({ ...base, kind: 'מועד הודעה על מימוש אופציה', date: u.optionNotice });
+    if (u.hasOption && u.optionEnd) ev.push({ ...base, kind: 'סיום תקופת אופציה', date: u.optionEnd });
+    (u.securities || []).forEach(s => { if (s.expiry) ev.push({ ...base, kind: 'פקיעת ביטחון – ' + (s.type || ''), date: s.expiry }); });
+  });
+  ev.forEach(e => e.days = daysUntil(e.date));
+  return ev.sort((a, b) => a.days - b.days);
+}
+function activeAlerts() {
+  const lim = num(S.settings.reminderDays) || 30;
+  return collectEvents().filter(e => e.days <= lim && e.days >= -60 && !(S.dismissed || {})[alertKey(e)]);
+}
+const alertKey = e => e.u.id + '|' + e.kind + '|' + e.date;
+function statusPill(dateStr) {
+  const d = daysUntil(dateStr); if (d === null) return '<span class="muted">—</span>';
+  const lim = num(S.settings.reminderDays) || 30;
+  const cls = d < 0 ? 'crit' : d <= lim ? 'warn' : d <= 180 ? 'neutral' : 'good';
+  const icon = d < 0 ? '⛔ ' : d <= lim ? '⚠ ' : '';
+  const txt = d < 0 ? `עבר (${-d} ימים)` : d === 0 ? 'היום' : `${d} ימים`;
+  return `<span class="pill ${cls}" title="${esc(txt)}">${icon}${fmtDate(dateStr)}</span>`;
+}
+
+/* ============================== Tabs ============================== */
+let curTab = (location.hash || '#dashboard').slice(1);
+let dashYear = new Date().getFullYear();
+let propFilter = '';
+function showTab(t) {
+  if (!document.getElementById('tab-' + t)) t = 'dashboard';
+  curTab = t; history.replaceState(null, '', '#' + t);
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === t));
+  document.querySelectorAll('.tab').forEach(s => s.classList.toggle('active', s.id === 'tab-' + t));
+}
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+
+function renderAll() {
+  $('#companyTitle').textContent = S.settings.company;
+  const n = activeAlerts().length;
+  $('#alertBadge').innerHTML = n ? `<span class="badge">${n}</span>` : '';
+  renderDashboard(); renderProperties(); renderFinance(); renderInvoices(); renderAlerts(); renderSettings();
+  showTab(curTab);
+}
+
+/* ============================== Dashboard ============================== */
+function barChart(rows, opts = {}) {
+  // rows: [{label, values:[v1,v2?], tips:[...]}]
+  const max = Math.max(1, ...rows.flatMap(r => r.values));
+  if (!rows.length) return '<div class="empty">אין נתונים</div>';
+  return '<div class="bars">' + rows.map(r => `
+    <div class="bar-row">
+      <div class="lbl" title="${esc(r.label)}">${esc(r.label)}</div>
+      <div class="track">${r.values.map((v, i) => `<div class="bar s${i + 1}" style="width:${Math.max(0.3, v / max * 100)}%" data-tip="${esc(r.label + ' · ' + (opts.names ? opts.names[i] + ': ' : '') + (opts.fmt || ils)(v))}"></div>`).join('')}</div>
+      <div class="val">${r.values.map(v => (opts.fmt || fmtShort)(v)).join(' / ')}</div>
+    </div>`).join('') + '</div>';
+}
+function renderDashboard() {
+  const y = dashYear, t = totals(y), w = wale(), alerts = activeAlerts();
+  const occ = t.area ? t.leasedArea / t.area * 100 : 0;
+  const incY = t.rentY + t.otherY, noi = incY - t.expY;
+  const years = []; for (let i = new Date().getFullYear() - 3; i <= new Date().getFullYear() + 3; i++) years.push(i);
+
+  const propRows = S.properties.map(p => ({ label: p.name, values: [t.byProp[p.id].rentM] })).sort((a, b) => b.values[0] - a.values[0]);
+  const ieRows = S.properties.map(p => ({ label: p.name, values: [t.byProp[p.id].inc, t.byProp[p.id].exp] }));
+  const expCat = {}; S.expenses.forEach(r => { const v = recordAnnual(r, y); if (v) expCat[r.type] = (expCat[r.type] || 0) + v; });
+  const expRows = Object.entries(expCat).map(([k, v]) => ({ label: k, values: [v] })).sort((a, b) => b.values[0] - a.values[0]);
+  const incCat = { 'שכירות + דמי ניהול בהסכם': t.rentY }; S.incomes.forEach(r => { const v = recordAnnual(r, y); if (v) incCat[r.type] = (incCat[r.type] || 0) + v; });
+  const incRows = Object.entries(incCat).filter(([, v]) => v).map(([k, v]) => ({ label: k, values: [v] })).sort((a, b) => b.values[0] - a.values[0]);
+  const payM = {}; allUnits().forEach(({ u }) => { if (isLeased(u)) payM[u.payMethod] = (payM[u.payMethod] || 0) + num(u.rent); });
+  const payRows = Object.entries(payM).map(([k, v]) => ({ label: k, values: [v] })).sort((a, b) => b.values[0] - a.values[0]);
+  const expiry = {}; allUnits().forEach(({ u }) => { if (isLeased(u) && u.end) { const yy = parseDate(u.end).getFullYear(); expiry[yy] = (expiry[yy] || 0) + num(u.area); } });
+  const expiryRows = Object.keys(expiry).sort().map(k => ({ label: String(k), values: [expiry[k]] }));
+  const occRows = S.properties.map(p => { const b = t.byProp[p.id]; return { label: p.name, values: [b.area ? b.leasedArea / b.area * 100 : 0] }; });
+  const pct = v => v.toFixed(0) + '%', sqm = v => fmt(v) + ' מ״ר';
+  const upcoming = collectEvents().filter(e => e.days >= -30 && e.days <= 365).slice(0, 12);
+
+  $('#tab-dashboard').innerHTML = `
+  <div class="row" style="margin-bottom:12px">
+    <h2 style="margin:0;font-size:18px">סיכום תיק הנכסים</h2><div class="spacer"></div>
+    <label style="margin:0">שנה</label>
+    <select style="width:auto" onchange="dashYear=+this.value;renderDashboard()">${years.map(v => `<option ${v === y ? 'selected' : ''}>${v}</option>`).join('')}</select>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><div class="k">נכסים / יחידות</div><div class="v">${S.properties.length} / ${t.units}</div><div class="d">${t.leased} יחידות מושכרות</div></div>
+    <div class="kpi"><div class="k">שטח כולל</div><div class="v">${fmt(t.area)} מ״ר</div><div class="d">${fmt(t.parking)} חניות</div></div>
+    <div class="kpi"><div class="k">תפוסה (לפי שטח)</div><div class="v">${occ.toFixed(1)}%</div>
+      <div class="meter" style="margin-top:6px" data-tip="מושכר ${fmt(t.leasedArea)} מ״ר · פנוי ${fmt(t.area - t.leasedArea)} מ״ר"><div style="width:${occ}%;background:var(--s1)"></div></div></div>
+    <div class="kpi"><div class="k">שכ״ד חודשי (לפני מע״מ)</div><div class="v">${ils(t.monthlyRent)}</div><div class="d">+ דמי ניהול ${ils(t.monthlyMgmt)}</div></div>
+    <div class="kpi"><div class="k">הכנסות ${y}</div><div class="v">${fmtShort(incY)}</div><div class="d">מתוכן נוספות ${fmtShort(t.otherY)}</div></div>
+    <div class="kpi"><div class="k">הוצאות ${y}</div><div class="v">${fmtShort(t.expY)}</div><div class="d">NOI: ${fmtShort(noi)}</div></div>
+    <div class="kpi"><div class="k">משך שכירות ממוצע (WALE)</div><div class="v">${w === null ? '—' : w.toFixed(1) + ' שנים'}</div><div class="d">משוקלל לפי שכ״ד</div></div>
+    <div class="kpi"><div class="k">התראות פעילות</div><div class="v" style="color:${alerts.length ? 'var(--crit)' : 'var(--good-ink)'}">${alerts.length ? '⚠ ' : '✓ '}${alerts.length}</div><div class="d">בטווח ${S.settings.reminderDays} ימים</div></div>
+  </div>
+  <div class="charts">
+    <div class="card"><h2>הכנסה חודשית לפי נכס</h2>${barChart(propRows)}</div>
+    <div class="card"><h2>הכנסות מול הוצאות לפי נכס – ${y}</h2>
+      <div class="legend"><span><i style="background:var(--s1)"></i>הכנסות</span><span><i style="background:var(--s2)"></i>הוצאות</span></div>
+      ${barChart(ieRows, { names: ['הכנסות', 'הוצאות'] })}</div>
+    <div class="card"><h2>תפוסה לפי נכס (% משטח)</h2>${barChart(occRows, { fmt: pct })}</div>
+    <div class="card"><h2>פילוח הכנסות – ${y}</h2>${barChart(incRows)}</div>
+    <div class="card"><h2>הוצאות לפי קטגוריה – ${y}</h2>${barChart(expRows)}</div>
+    <div class="card"><h2>שכ״ד חודשי לפי אמצעי תשלום</h2>${barChart(payRows)}</div>
+    <div class="card"><h2>שטח מושכר לפי שנת סיום הסכם</h2>${barChart(expiryRows, { fmt: sqm })}</div>
+    <div class="card"><h2>מועדים קרובים (12 חודשים)</h2>
+      ${upcoming.length ? `<div class="tbl-wrap"><table><tr><th>תאריך</th><th>אירוע</th><th>נכס / שוכר</th></tr>
+      ${upcoming.map(e => `<tr><td>${statusPill(e.date)}</td><td>${esc(e.kind)}</td><td>${esc(e.p.name)} · ${esc(e.who)}</td></tr>`).join('')}</table></div>` : '<div class="empty">אין מועדים קרובים. הזן תאריכי הסכם בלשונית נכסים.</div>'}
+    </div>
+  </div>
+  <div class="card"><h2>טבלת סיכום לפי נכס – ${y}</h2><div class="tbl-wrap"><table>
+    <tr><th>נכס</th><th class="num">יחידות</th><th class="num">שטח מ״ר</th><th class="num">תפוסה</th><th class="num">הכנסה חודשית</th><th class="num">הכנסות שנתיות</th><th class="num">הוצאות שנתיות</th><th class="num">NOI</th></tr>
+    ${S.properties.map(p => { const b = t.byProp[p.id]; return `<tr><td>${esc(p.name)}</td><td class="num">${p.units.length}</td><td class="num">${fmt(b.area)}</td><td class="num">${b.area ? (b.leasedArea / b.area * 100).toFixed(0) : 0}%</td><td class="num">${ils(b.rentM)}</td><td class="num">${ils(b.inc)}</td><td class="num">${ils(b.exp)}</td><td class="num">${ils(b.inc - b.exp)}</td></tr>`; }).join('')}
+    <tfoot><tr><td>סה״כ</td><td class="num">${t.units}</td><td class="num">${fmt(t.area)}</td><td class="num">${occ.toFixed(0)}%</td><td class="num">${ils(t.monthlyRent + t.monthlyMgmt)}</td><td class="num">${ils(incY)}</td><td class="num">${ils(t.expY)}</td><td class="num">${ils(noi)}</td></tr></tfoot>
+  </table></div><div class="muted" style="margin-top:6px;font-size:12px">הכנסות ללא שיוך לנכס / הוצאות כלליות נכללות בסה״כ בלבד.</div></div>`;
+}
+
+/* ============================== Properties ============================== */
+function renderProperties() {
+  const q = propFilter.trim();
+  const props = S.properties.filter(p => !q || (p.name + p.city + p.address + p.units.map(u => u.tenant + u.name).join(' ')).includes(q));
+  $('#tab-properties').innerHTML = `
+  <div class="row" style="margin-bottom:12px">
+    <input style="max-width:280px" placeholder="חיפוש נכס / שוכר…" value="${esc(propFilter)}" oninput="propFilter=this.value;renderProperties();const i=document.querySelector('#tab-properties input');i.focus();i.setSelectionRange(i.value.length,i.value.length)">
+    <div class="spacer"></div>
+    <button class="btn" onclick="exportCSV()">⬇ ייצוא לאקסל (CSV)</button>
+    <button class="btn primary" onclick="editProperty()">+ נכס חדש</button>
+  </div>
+  ${props.map(p => {
+    const area = p.units.reduce((s, u) => s + num(u.area), 0), park = p.units.reduce((s, u) => s + num(u.parking), 0);
+    const rent = p.units.reduce((s, u) => s + (isLeased(u) ? num(u.rent) : 0), 0);
+    return `<div class="card">
+      <div class="prop-head"><h2>${esc(p.name)}</h2><span class="muted">${esc([p.address, p.city].filter(Boolean).join(', '))}</span>
+        <span class="pill neutral">${fmt(area)} מ״ר</span><span class="pill neutral">${park} חניות</span><span class="pill neutral">שכ״ד ${ils(rent)}/חודש</span>
+        ${num(p.ownership) !== 100 ? `<span class="pill neutral">בעלות ${num(p.ownership)}%</span>` : ''}
+        <div class="spacer"></div>
+        <button class="btn sm" onclick="editUnit('${p.id}')">+ יחידה</button>
+        <button class="btn sm" onclick="editProperty('${p.id}')">✎ נכס</button>
+        <button class="btn sm danger" onclick="deleteProperty('${p.id}')">🗑</button></div>
+      ${p.notes ? `<div class="muted" style="margin-bottom:8px">${esc(p.notes)}</div>` : ''}
+      <div class="tbl-wrap"><table>
+        <tr><th>יחידה</th><th class="num">שטח</th><th class="num">חניות</th><th>מחסן</th><th>שוכר</th><th class="num">שכ״ד</th><th>תשלום</th><th>סיום הסכם</th><th>אופציה</th><th>סיום צ׳קים</th><th>ביטחונות</th><th></th></tr>
+        ${p.units.map(u => `<tr>
+          <td><b>${esc(u.name || '—')}</b>${u.floor ? `<div class="muted">קומה ${esc(u.floor)}</div>` : ''}<div class="muted">${esc(u.use)}</div></td>
+          <td class="num"><input type="number" min="0" style="width:80px" value="${num(u.area)}" onchange="setUnitField('${p.id}','${u.id}','area',+this.value)"></td>
+          <td class="num"><input type="number" min="0" style="width:60px" value="${num(u.parking)}" onchange="setUnitField('${p.id}','${u.id}','parking',+this.value)"></td>
+          <td>${u.storage ? '✓' + (num(u.storageArea) ? ' ' + num(u.storageArea) + ' מ״ר' : '') : '—'}</td>
+          <td>${isLeased(u) ? esc(u.tenant) : '<span class="pill neutral">פנוי</span>'}${u.contact || u.phone ? `<div class="muted">${esc([u.contact, u.phone].filter(Boolean).join(' · '))}</div>` : ''}</td>
+          <td class="num">${num(u.rent) ? ils(u.rent) : '—'}${num(u.mgmtFee) ? `<div class="muted">+ניהול ${ils(u.mgmtFee)}</div>` : ''}${u.indexed ? '<div class="muted">צמוד מדד</div>' : ''}</td>
+          <td>${isLeased(u) ? esc(u.payMethod) + `<div class="muted">${esc(u.payFreq)}</div>` : '—'}</td>
+          <td>${statusPill(u.end)}${u.start ? `<div class="muted">מ־${fmtDate(u.start)}</div>` : ''}</td>
+          <td>${u.hasOption ? '<span class="pill good">יש</span>' + (u.optionEnd ? `<div class="muted">עד ${fmtDate(u.optionEnd)}</div>` : '') : '<span class="muted">אין</span>'}</td>
+          <td>${u.payMethod === 'צ׳קים' || u.chequesEnd ? statusPill(u.chequesEnd) : '—'}</td>
+          <td>${(u.securities || []).length ? u.securities.map(s => `<div>${esc(s.type)}${num(s.amount) ? ' ' + ils(s.amount) : ''}</div>`).join('') : '<span class="muted">—</span>'}</td>
+          <td style="white-space:nowrap"><button class="btn sm" onclick="editUnit('${p.id}','${u.id}')">✎</button>
+            <button class="btn sm" title="פיצול יחידה" onclick="splitUnit('${p.id}','${u.id}')">✂</button>
+            <button class="btn sm danger" onclick="deleteUnit('${p.id}','${u.id}')">🗑</button></td>
+        </tr>`).join('') || '<tr><td colspan="12" class="empty">אין יחידות – לחץ "+ יחידה"</td></tr>'}
+      </table></div></div>`;
+  }).join('') || '<div class="empty">לא נמצאו נכסים</div>'}`;
+}
+function setUnitField(pid, uid_, f, v) { const u = propById(pid).units.find(x => x.id === uid_); u[f] = v; save(); }
+
+/* ---------- Modal ---------- */
+function openModal(html) { $('#modal').innerHTML = html; $('#modalBg').classList.add('open'); }
+function closeModal() { $('#modalBg').classList.remove('open'); }
+$('#modalBg').addEventListener('mousedown', e => { if (e.target.id === 'modalBg') closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+const field = (lbl, name, val, type = 'text', extra = '') => `<div><label>${lbl}</label><input name="${name}" type="${type}" value="${esc(val)}" ${extra}></div>`;
+const sel = (lbl, name, val, opts) => `<div><label>${lbl}</label><select name="${name}">${opts.map(o => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select></div>`;
+const chk = (lbl, name, val, extra = '') => `<label class="chk"><input type="checkbox" name="${name}" ${val ? 'checked' : ''} ${extra}>${lbl}</label>`;
+function formData(root) {
+  const o = {};
+  root.querySelectorAll('[name]').forEach(el => { o[el.name] = el.type === 'checkbox' ? el.checked : el.type === 'number' ? num(el.value) : el.value.trim(); });
+  return o;
+}
+
+function editProperty(pid) {
+  const p = pid ? propById(pid) : newProperty();
+  openModal(`<h2>${pid ? 'עריכת נכס' : 'נכס חדש'}</h2><form id="f">
+    <div class="grid g2">${field('שם הנכס', 'name', p.name, 'text', 'required')}${field('כתובת', 'address', p.address)}${field('עיר', 'city', p.city)}${field('אחוז בעלות', 'ownership', p.ownership, 'number', 'min="0" max="100"')}</div>
+    <div style="margin-top:10px"><label>הערות</label><textarea name="notes">${esc(p.notes)}</textarea></div>
+    <div class="actions"><button class="btn primary">שמור</button><button type="button" class="btn" onclick="closeModal()">ביטול</button></div></form>`);
+  $('#f').onsubmit = e => { e.preventDefault(); Object.assign(p, formData($('#f'))); if (!pid) S.properties.push(p); closeModal(); save(); };
+}
+function deleteProperty(pid) { const p = propById(pid); if (confirm(`למחוק את הנכס "${p.name}" וכל היחידות שלו?`)) { S.properties = S.properties.filter(x => x.id !== pid); save(); } }
+function deleteUnit(pid, id) { const p = propById(pid); const u = p.units.find(x => x.id === id); if (confirm(`למחוק את היחידה "${u.name}"?`)) { p.units = p.units.filter(x => x.id !== id); save(); } }
+
+function secRow(s = {}) {
+  return `<div class="sec-row">
+    <select data-s="type">${SEC_TYPES.map(o => `<option ${o === s.type ? 'selected' : ''}>${o}</option>`).join('')}</select>
+    <input data-s="amount" type="number" placeholder="סכום ₪" value="${esc(s.amount || '')}">
+    <input data-s="expiry" type="date" title="תוקף" value="${esc(s.expiry || '')}">
+    <input data-s="notes" placeholder="פרטים (בנק, מספר…)" value="${esc(s.notes || '')}">
+    <button type="button" class="btn sm danger" onclick="this.parentElement.remove()">✕</button></div>`;
+}
+function editUnit(pid, id) {
+  const p = propById(pid), u = id ? p.units.find(x => x.id === id) : newUnit();
+  openModal(`<h2>${id ? 'עריכת יחידה' : 'יחידה חדשה'} – ${esc(p.name)}</h2><form id="f">
+  <fieldset><legend>פרטי היחידה</legend><div class="grid g4">
+    ${field('שם / תיאור', 'name', u.name)}${field('קומה', 'floor', u.floor)}${field('שטח (מ״ר)', 'area', u.area, 'number', 'min="0" step="any"')}${field('חניות', 'parking', u.parking, 'number', 'min="0"')}
+    ${sel('שימוש', 'use', u.use, USES)}<div style="align-self:end">${chk('כולל מחסן', 'storage', u.storage)}</div>${field('שטח מחסן (מ״ר)', 'storageArea', u.storageArea, 'number', 'min="0" step="any"')}
+  </div></fieldset>
+  <fieldset><legend>שוכר</legend><div class="grid g4">
+    ${field('שם השוכר (ריק = פנוי)', 'tenant', u.tenant)}${field('ח.פ / ת.ז', 'tenantId', u.tenantId)}${field('איש קשר', 'contact', u.contact)}${field('טלפון', 'phone', u.phone, 'tel')}${field('מייל', 'email', u.email, 'email')}
+  </div></fieldset>
+  <fieldset><legend>כספים ותשלום</legend><div class="grid g4">
+    ${field('שכ״ד חודשי ₪ (לפני מע״מ)', 'rent', u.rent, 'number', 'min="0" step="any"')}${field('דמי ניהול חודשי ₪', 'mgmtFee', u.mgmtFee, 'number', 'min="0" step="any"')}
+    <div style="align-self:end">${chk('צמוד למדד', 'indexed', u.indexed)}</div>${field('מדד בסיס / הערה', 'indexBase', u.indexBase)}
+    ${sel('אמצעי תשלום', 'payMethod', u.payMethod, PAY_METHODS)}${sel('תדירות תשלום', 'payFreq', u.payFreq, PAY_FREQ)}${field('יום תשלום בחודש', 'payDay', u.payDay)}
+    ${field('תאריך הצ׳ק האחרון', 'chequesEnd', u.chequesEnd, 'date')}${field('בנק / פרטי צ׳קים', 'chequesBank', u.chequesBank)}
+  </div></fieldset>
+  <fieldset><legend>הסכם שכירות</legend><div class="grid g4">
+    ${field('תאריך חתימה', 'signDate', u.signDate, 'date')}${field('תחילת הסכם', 'start', u.start, 'date')}${field('סיום הסכם', 'end', u.end, 'date')}
+  </div>
+  <div style="margin-top:10px">${chk('יש אופציה להארכה', 'hasOption', u.hasOption, 'onchange="document.getElementById(\'optBox\').style.display=this.checked?\'grid\':\'none\'"')}</div>
+  <div id="optBox" class="grid g4" style="margin-top:8px;display:${u.hasOption ? 'grid' : 'none'}">
+    ${field('תקופת אופציה (למשל 5 שנים)', 'optionPeriod', u.optionPeriod)}${field('סיום תקופת האופציה', 'optionEnd', u.optionEnd, 'date')}${field('מועד אחרון להודעה על מימוש', 'optionNotice', u.optionNotice, 'date')}
+  </div></fieldset>
+  <fieldset><legend>ביטחונות</legend><div id="secs">${(u.securities || []).map(secRow).join('')}</div>
+    <button type="button" class="btn sm" onclick="document.getElementById('secs').insertAdjacentHTML('beforeend', secRow())">+ הוסף ביטחון</button></fieldset>
+  <div><label>הערות</label><textarea name="notes">${esc(u.notes)}</textarea></div>
+  <div class="actions"><button class="btn primary">שמור</button><button type="button" class="btn" onclick="closeModal()">ביטול</button></div></form>`);
+  $('#f').onsubmit = e => {
+    e.preventDefault();
+    const d = formData($('#f'));
+    Object.keys(d).forEach(k => { if (!(k in u)) delete d[k]; });
+    d.securities = [...document.querySelectorAll('#secs .sec-row')].map(r => { const s = {}; r.querySelectorAll('[data-s]').forEach(el => s[el.dataset.s] = el.value.trim()); s.amount = num(s.amount); return s; });
+    Object.assign(u, d); if (!id) p.units.push(u); closeModal(); save();
+  };
+}
+
+/* ---------- Split ---------- */
+function splitUnit(pid, id) {
+  const p = propById(pid), u = p.units.find(x => x.id === id);
+  const partRow = (i, area, park) => `<div class="grid g4 part" style="margin-bottom:6px">
+    <div><label>שם חלק ${i}</label><input data-k="name" value="${esc(u.name + ' – ' + i)}"></div>
+    <div><label>שטח מ״ר</label><input data-k="area" type="number" step="any" value="${area}" oninput="splitSum()"></div>
+    <div><label>חניות</label><input data-k="parking" type="number" value="${park}"></div></div>`;
+  const draw = n => { const a = num(u.area), pk = num(u.parking); $('#parts').innerHTML = Array.from({ length: n }, (_, i) => partRow(i + 1, +(a / n).toFixed(1), i === 0 ? pk - Math.floor(pk / n) * (n - 1) : Math.floor(pk / n))).join(''); splitSum(); };
+  openModal(`<h2>פיצול יחידה – ${esc(u.name)} (${fmt(u.area)} מ״ר)</h2>
+    <div class="row" style="margin-bottom:10px"><label style="margin:0">מספר חלקים</label>
+      <select id="nParts" style="width:auto">${[2, 3, 4, 5, 6].map(n => `<option>${n}</option>`).join('')}</select>
+      <span id="splitSum" class="muted"></span></div>
+    <div id="parts"></div>
+    <div class="muted" style="font-size:12px">פרטי השוכר וההסכם נשמרים בחלק הראשון. שאר החלקים נוצרים כיחידות פנויות.</div>
+    <div class="actions"><button class="btn primary" id="doSplit">פצל</button><button class="btn" onclick="closeModal()">ביטול</button></div>`);
+  window.splitSum = () => { const s = [...document.querySelectorAll('#parts [data-k=area]')].reduce((t, el) => t + num(el.value), 0); $('#splitSum').textContent = `סה״כ ${fmt(s)} מ״ר מתוך ${fmt(u.area)}` + (Math.abs(s - num(u.area)) > 0.5 ? ' ⚠ לא תואם' : ' ✓'); };
+  $('#nParts').onchange = e => draw(+e.target.value); draw(2);
+  $('#doSplit').onclick = () => {
+    const parts = [...document.querySelectorAll('#parts .part')].map(r => { const o = {}; r.querySelectorAll('[data-k]').forEach(el => o[el.dataset.k] = el.dataset.k === 'name' ? el.value : num(el.value)); return o; });
+    const idx = p.units.indexOf(u);
+    const created = parts.map((o, i) => i === 0 ? Object.assign(u, o) : newUnit({ ...o, floor: u.floor, use: u.use }));
+    p.units.splice(idx, 1, ...created); closeModal(); save();
+  };
+}
+
+/* ============================== Finance ============================== */
+const propOptions = (val, general = true) => (general ? `<option value="">כללי / ללא שיוך</option>` : '') + S.properties.map(p => `<option value="${p.id}" ${p.id === val ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+function finTable(list, kind) {
+  const y = dashYear;
+  if (!list.length) return '<div class="empty">אין רשומות</div>';
+  const tot = list.reduce((s, r) => s + recordAnnual(r, y), 0);
+  return `<div class="tbl-wrap"><table><tr><th>תאריך</th><th>נכס</th><th>סוג</th><th>תיאור</th>${kind === 'exp' ? '<th>ספק / חשבונית</th>' : ''}<th class="num">סכום</th><th>תדירות</th><th class="num">סה״כ ${y}</th><th></th></tr>
+  ${list.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(r => `<tr>
+    <td>${fmtDate(r.date)}${r.endDate ? `<div class="muted">עד ${fmtDate(r.endDate)}</div>` : ''}</td><td>${esc(propById(r.propertyId)?.name || 'כללי')}</td><td>${esc(r.type)}</td><td>${esc(r.desc)}</td>
+    ${kind === 'exp' ? `<td>${esc(r.supplier || '')}${r.invoiceNo ? `<div class="muted">#${esc(r.invoiceNo)}</div>` : ''}${r.fileId ? ` <a href="#" onclick="openFile('${r.fileId}');return false" title="${esc(r.fileName)}">📎</a>` : ''}</td>` : ''}
+    <td class="num">${ils(r.amount)}</td><td>${esc(r.freq)}</td><td class="num">${ils(recordAnnual(r, y))}</td>
+    <td style="white-space:nowrap"><button class="btn sm" onclick="editRecord('${kind}','${r.id}')">✎</button><button class="btn sm danger" onclick="deleteRecord('${kind}','${r.id}')">🗑</button></td></tr>`).join('')}
+  <tfoot><tr><td colspan="${kind === 'exp' ? 7 : 6}">סה״כ לשנת ${y}</td><td class="num">${ils(tot)}</td><td></td></tr></tfoot></table></div>`;
+}
+function renderFinance() {
+  $('#tab-finance').innerHTML = `
+  <div class="row" style="margin-bottom:12px"><span class="muted">הסכומים השנתיים מחושבים לשנת ${dashYear} (ניתן לשנות בדשבורד). שכ״ד ודמי ניהול מתוך ההסכמים מחושבים אוטומטית.</span></div>
+  <div class="card"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">הכנסות נוספות</h2><span class="muted">דמי ניהול, סולארי, חניה, שילוט ועוד</span><div class="spacer"></div><button class="btn primary" onclick="editRecord('inc')">+ הכנסה</button></div>${finTable(S.incomes, 'inc')}</div>
+  <div class="card"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">הוצאות</h2><span class="muted">שיפוץ, ניהול, ארנונה, ביטוח ועוד</span><div class="spacer"></div><button class="btn primary" onclick="editRecord('exp')">+ הוצאה</button></div>${finTable(S.expenses, 'exp')}</div>`;
+}
+function editRecord(kind, id, preset) {
+  const list = kind === 'inc' ? S.incomes : S.expenses;
+  const r = id ? list.find(x => x.id === id) : Object.assign({ id: uid(), propertyId: '', type: kind === 'inc' ? INCOME_TYPES[0] : EXPENSE_TYPES[0], desc: '', amount: 0, freq: kind === 'inc' ? 'חודשי' : 'חד פעמי', date: new Date().toISOString().slice(0, 10), endDate: '', supplier: '', invoiceNo: '', notes: '' }, preset || {});
+  openModal(`<h2>${id ? 'עריכת' : 'הוספת'} ${kind === 'inc' ? 'הכנסה' : 'הוצאה'}</h2><form id="f"><div class="grid g2">
+    <div><label>נכס</label><select name="propertyId">${propOptions(r.propertyId)}</select></div>
+    ${sel('סוג', 'type', r.type, kind === 'inc' ? INCOME_TYPES : EXPENSE_TYPES)}
+    ${field('תיאור', 'desc', r.desc)}${field('סכום ₪', 'amount', r.amount, 'number', 'step="any" min="0" required')}
+    ${sel('תדירות', 'freq', r.freq, FREQS)}${field('תאריך / תחילה', 'date', r.date, 'date', 'required')}${field('עד תאריך (לתשלום חוזר)', 'endDate', r.endDate, 'date')}
+    ${kind === 'exp' ? field('ספק', 'supplier', r.supplier) + field('מספר חשבונית', 'invoiceNo', r.invoiceNo) : ''}
+    </div><div style="margin-top:10px"><label>הערות</label><textarea name="notes">${esc(r.notes)}</textarea></div>
+    <div class="actions"><button class="btn primary">שמור</button><button type="button" class="btn" onclick="closeModal()">ביטול</button></div></form>`);
+  $('#f').onsubmit = e => { e.preventDefault(); Object.assign(r, formData($('#f'))); if (!id) list.push(r); closeModal(); save(); };
+}
+async function deleteRecord(kind, id) {
+  if (!confirm('למחוק את הרשומה?')) return;
+  const key = kind === 'inc' ? 'incomes' : 'expenses', r = S[key].find(x => x.id === id);
+  if (r && r.fileId) { try { await delFile(r.fileId); } catch (e) {} }
+  S[key] = S[key].filter(x => x.id !== id); save();
+}
+
+/* ============================== Invoices ============================== */
+function renderInvoices() {
+  const withFiles = S.expenses.filter(r => r.fileId);
+  $('#tab-invoices').innerHTML = `
+  <div class="card"><h2>טעינת חשבונית הוצאה</h2>
+    <form id="invForm"><div class="grid g4">
+      <div><label>קובץ (PDF / תמונה)</label><input type="file" name="file" accept=".pdf,image/*" required></div>
+      <div><label>נכס</label><select name="propertyId">${propOptions('')}</select></div>
+      ${sel('קטגוריה', 'type', 'אחר', EXPENSE_TYPES)}${field('ספק', 'supplier', '')}${field('מספר חשבונית', 'invoiceNo', '')}
+      ${field('תאריך', 'date', new Date().toISOString().slice(0, 10), 'date', 'required')}${field('סכום ₪', 'amount', '', 'number', 'step="any" min="0" required')}${field('תיאור', 'desc', '')}
+    </div><div class="actions" style="position:static"><button class="btn primary">שמור חשבונית</button></div></form>
+    <div class="muted" style="font-size:12px;margin-top:6px">החשבונית נשמרת כהוצאה (חד פעמית) ומופיעה גם בלשונית הכנסות והוצאות. הקבצים נשמרים בדפדפן זה בלבד ואינם נכללים בגיבוי JSON.</div>
+  </div>
+  <div class="card"><h2>חשבוניות שנטענו (${withFiles.length})</h2>
+    ${withFiles.length ? `<div class="tbl-wrap"><table><tr><th>תאריך</th><th>נכס</th><th>ספק</th><th>מס׳</th><th>קטגוריה</th><th class="num">סכום</th><th>קובץ</th><th></th></tr>
+    ${withFiles.sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(r => `<tr><td>${fmtDate(r.date)}</td><td>${esc(propById(r.propertyId)?.name || 'כללי')}</td><td>${esc(r.supplier)}</td><td>${esc(r.invoiceNo)}</td><td>${esc(r.type)}</td><td class="num">${ils(r.amount)}</td>
+      <td><a href="#" onclick="openFile('${r.fileId}');return false">📎 ${esc(r.fileName)}</a></td><td><button class="btn sm danger" onclick="deleteRecord('exp','${r.id}')">🗑</button></td></tr>`).join('')}</table></div>` : '<div class="empty">טרם נטענו חשבוניות</div>'}
+  </div>`;
+  $('#invForm').onsubmit = async e => {
+    e.preventDefault();
+    const f = e.target.file.files[0]; if (!f) return;
+    const d = formData(e.target); delete d.file;
+    const fileId = uid();
+    try { await putFile(fileId, f); } catch (err) { alert('שמירת הקובץ נכשלה: ' + err.message); return; }
+    S.expenses.push(Object.assign({ id: uid(), freq: 'חד פעמי', endDate: '', notes: '', fileId, fileName: f.name }, d));
+    save();
+  };
+}
+async function openFile(id) {
+  try { const b = await getFile(id); if (!b) return alert('הקובץ לא נמצא בדפדפן זה'); window.open(URL.createObjectURL(b), '_blank'); }
+  catch (e) { alert('לא ניתן לפתוח את הקובץ: ' + e.message); }
+}
+
+/* ============================== Alerts & email ============================== */
+function alertsText(list) {
+  return list.map(e => `• ${e.kind} – ${e.p.name} – ${e.who} – ${fmtDate(e.date)} (${e.days < 0 ? 'עבר לפני ' + (-e.days) + ' ימים' : 'בעוד ' + e.days + ' ימים'})`).join('\n');
+}
+function mailto(list) {
+  const subj = `[${S.settings.company}] תזכורת: ${list.length} מועדים קרובים`;
+  const body = `שלום,\n\nלהלן מועדים שמתקרבים בתיק הנכסים:\n\n${alertsText(list)}\n\nנשלח ממערכת ניהול הנכסים.`;
+  return `mailto:${encodeURIComponent(S.settings.email)}?subject=${encodeURIComponent(subj)}&body=${encodeURIComponent(body)}`;
+}
+function renderAlerts() {
+  const lim = num(S.settings.reminderDays) || 30;
+  const act = activeAlerts(), all = collectEvents().filter(e => e.days >= -60);
+  window._act = act;
+  $('#tab-alerts').innerHTML = `
+  <div class="card"><div class="row" style="margin-bottom:8px"><h2 style="margin:0">התראות פעילות – ${lim} ימים לפני מועד</h2><div class="spacer"></div>
+    ${act.length ? `<a class="btn primary" href="${mailto(act)}">✉ שלח תזכורת במייל</a>` : ''}
+    <button class="btn" onclick="downloadICS()">📅 הוסף ליומן (תזכורות אוטומטיות)</button></div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">מייל אל ${esc(S.settings.email)}. לשליחה אוטומטית ללא פתיחת הקובץ – ראה הגדרות.</div>
+    ${act.length ? act.map(e => `<div class="alert-item">${statusPill(e.date)}<b>${esc(e.kind)}</b><span>${esc(e.p.name)} · ${esc(e.who)}</span>
+      <span class="muted">${e.days < 0 ? 'עבר לפני ' + (-e.days) + ' ימים' : 'בעוד ' + e.days + ' ימים'}</span><div class="spacer"></div>
+      <a class="btn sm" href="${mailto([e])}">✉</a><button class="btn sm" onclick="dismissAlert('${esc(alertKey(e))}')">טופל ✓</button></div>`).join('') : '<div class="empty">✓ אין התראות פעילות</div>'}
+  </div>
+  <div class="card"><h2>כל המועדים העתידיים</h2>
+    ${all.length ? `<div class="tbl-wrap"><table><tr><th>תאריך</th><th>אירוע</th><th>נכס</th><th>שוכר / יחידה</th><th class="num">ימים</th></tr>
+    ${all.map(e => `<tr><td>${statusPill(e.date)}</td><td>${esc(e.kind)}</td><td>${esc(e.p.name)}</td><td>${esc(e.who)}</td><td class="num">${e.days}</td></tr>`).join('')}</table></div>` : '<div class="empty">אין מועדים. הזן תאריכי סיום הסכם / צ׳קים / ביטחונות ביחידות.</div>'}
+  </div>`;
+}
+function dismissAlert(k) { S.dismissed = S.dismissed || {}; S.dismissed[k] = true; save(); }
+function downloadICS() {
+  const ev = collectEvents().filter(e => e.days >= 0);
+  if (!ev.length) return alert('אין מועדים עתידיים');
+  const d = s => s.replace(/-/g, ''), lim = num(S.settings.reminderDays) || 30;
+  const escI = s => String(s).replace(/[,;\\]/g, m => '\\' + m).replace(/\n/g, '\\n');
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Arelis//Properties//HE', 'CALSCALE:GREGORIAN'];
+  ev.forEach(e => {
+    const end = new Date(parseDate(e.date).getTime() + 864e5).toISOString().slice(0, 10);
+    lines.push('BEGIN:VEVENT', `UID:${alertKey(e).replace(/[^\w-]/g, '')}@arelis`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${d(e.date)}`, `DTEND;VALUE=DATE:${d(end)}`,
+      `SUMMARY:${escI(e.kind + ' – ' + e.p.name + ' – ' + e.who)}`, `DESCRIPTION:${escI(S.settings.company)}`,
+      'BEGIN:VALARM', 'ACTION:EMAIL', `ATTENDEE:mailto:${S.settings.email}`, `SUMMARY:${escI('תזכורת: ' + e.kind)}`, `DESCRIPTION:${escI(e.kind + ' – ' + e.p.name + ' – ' + fmtDate(e.date))}`, `TRIGGER:-P${lim}D`, 'END:VALARM',
+      'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${escI(e.kind)}`, `TRIGGER:-P${lim}D`, 'END:VALARM', 'END:VEVENT');
+  });
+  lines.push('END:VCALENDAR');
+  download('arelis_reminders.ics', lines.join('\r\n'), 'text/calendar');
+}
+
+/* ============================== Settings / IO ============================== */
+function renderSettings() {
+  $('#tab-settings').innerHTML = `
+  <div class="card"><h2>הגדרות כלליות</h2><form id="sf"><div class="grid g2">
+    ${field('שם החברה', 'company', S.settings.company)}${field('מייל לתזכורות', 'email', S.settings.email, 'email')}
+    ${field('ימים לפני מועד לתזכורת', 'reminderDays', S.settings.reminderDays, 'number', 'min="1"')}${field('מע״מ %', 'vat', S.settings.vat, 'number', 'step="any"')}
+  </div><div class="actions" style="position:static"><button class="btn primary">שמור הגדרות</button></div></form></div>
+  <div class="card"><h2>גיבוי ושחזור</h2>
+    <div class="row"><button class="btn" onclick="exportJSON()">⬇ ייצוא גיבוי (JSON)</button>
+      <label class="btn" style="margin:0">⬆ ייבוא גיבוי<input type="file" accept=".json" style="display:none" onchange="importJSON(this.files[0])"></label>
+      <button class="btn" onclick="exportCSV()">⬇ ייצוא יחידות לאקסל</button>
+      <div class="spacer"></div><button class="btn danger" onclick="resetData()">איפוס לנתוני ברירת מחדל</button></div>
+    <div class="muted" style="font-size:12px;margin-top:8px">הנתונים נשמרים בדפדפן במחשב זה. מומלץ לייצא גיבוי באופן קבוע ולשמור אותו בענן.</div></div>
+  <div class="card"><h2>שליחת מיילים אוטומטית</h2>
+    <p style="margin-top:0">קובץ HTML לא יכול לשלוח מייל בעצמו כשהוא סגור. יש שלוש אפשרויות:</p>
+    <ol style="padding-inline-start:20px;margin:0">
+      <li><b>כפתור "שלח תזכורת במייל"</b> בלשונית התראות – פותח מייל מוכן לשליחה.</li>
+      <li><b>"הוסף ליומן"</b> – מייבא את כל המועדים ליומן (Google/Outlook) עם תזכורת ${esc(S.settings.reminderDays)} ימים לפני.</li>
+      <li><b>שליחה אוטומטית מלאה</b> – ייצא גיבוי JSON והרץ מדי יום: <code>python html_reminders.py arelis_backup.json</code> (משתמש בהגדרות Gmail שבקובץ ‎.env).</li>
+    </ol></div>`;
+  $('#sf').onsubmit = e => { e.preventDefault(); Object.assign(S.settings, formData($('#sf'))); save(); alert('נשמר'); };
+}
+function download(name, content, type) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([content], { type })); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+}
+function exportJSON() { download('arelis_backup.json', JSON.stringify(S, null, 2), 'application/json'); }
+function importJSON(f) {
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { try { const d = JSON.parse(r.result); if (!d.properties) throw new Error('קובץ לא תקין'); if (confirm('הייבוא יחליף את כל הנתונים הקיימים. להמשיך?')) { S = d; S.incomes = S.incomes || []; S.expenses = S.expenses || []; save(); } } catch (e) { alert('שגיאה: ' + e.message); } };
+  r.readAsText(f);
+}
+function exportCSV() {
+  const H = ['נכס', 'כתובת', 'עיר', 'יחידה', 'קומה', 'שימוש', 'שטח', 'חניות', 'מחסן', 'שוכר', 'ח.פ', 'איש קשר', 'טלפון', 'מייל', 'שכ"ד חודשי', 'דמי ניהול', 'צמוד מדד', 'אמצעי תשלום', 'תדירות', 'סיום צ׳קים', 'חתימה', 'תחילה', 'סיום', 'אופציה', 'סיום אופציה', 'הודעת מימוש', 'ביטחונות', 'הערות'];
+  const rows = allUnits().map(({ p, u }) => [p.name, p.address, p.city, u.name, u.floor, u.use, u.area, u.parking, u.storage ? 'כן' : 'לא', u.tenant, u.tenantId, u.contact, u.phone, u.email, u.rent, u.mgmtFee, u.indexed ? 'כן' : 'לא', u.payMethod, u.payFreq, u.chequesEnd, u.signDate, u.start, u.end, u.hasOption ? 'יש' : 'אין', u.optionEnd, u.optionNotice, (u.securities || []).map(s => `${s.type} ${s.amount || ''} ${s.expiry || ''}`.trim()).join(' | '), u.notes]);
+  const csv = [H, ...rows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  download('arelis_units.csv', '﻿' + csv, 'text/csv;charset=utf-8');
+}
+function resetData() { if (confirm('לאפס את כל הנתונים לברירת המחדל? (מומלץ לייצא גיבוי קודם)')) { S = seed(); save(); } }
+function toggleTheme() {
+  const r = document.documentElement, dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  r.dataset.theme = dark ? 'light' : 'dark'; try { localStorage.setItem('arelis_theme', r.dataset.theme); } catch (e) {}
+}
+try { const th = localStorage.getItem('arelis_theme'); if (th) document.documentElement.dataset.theme = th; } catch (e) {}
+
+/* ---------- Tooltip ---------- */
+const tip = $('#tip');
+document.addEventListener('mousemove', e => {
+  const t = e.target.closest('[data-tip]');
+  if (!t) { tip.style.display = 'none'; return; }
+  tip.textContent = t.dataset.tip; tip.style.display = 'block';
+  tip.style.left = Math.min(innerWidth - tip.offsetWidth - 8, e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 14) + 'px';
+});
+
+renderAll();
+</script>
+</body>
+</html>
