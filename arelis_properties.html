@@ -812,66 +812,94 @@ function loadPdfJs() {
   });
   return pdfjsP;
 }
-// Turns a file into page images (JPEG blobs); PDFs are rendered page by page
-async function fileToImages(f, maxPages) {
-  if (f.type !== 'application/pdf' && !/\.pdf$/i.test(f.name)) return [f];
+// Splits a file into batches of page images (JPEG blobs) plus the PDF's text layer; a photo is one batch
+async function fileBatches(f, perBatch) {
+  if (f.type !== 'application/pdf' && !/\.pdf$/i.test(f.name)) return { pages: 1, batches: [{ from: 1, to: 1, load: async () => ({ images: [f], text: '' }) }] };
   const pdfjs = await loadPdfJs();
   const doc = await pdfjs.getDocument({ data: await f.arrayBuffer() }).promise;
-  const out = [];
-  for (let n = 1; n <= Math.min(doc.numPages, maxPages); n++) {
-    const page = await doc.getPage(n), v1 = page.getViewport({ scale: 1 });
-    const vp = page.getViewport({ scale: Math.min(3, 1600 / Math.max(v1.width, v1.height)) });
-    const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
-    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
-    await page.render({ canvasContext: g, viewport: vp }).promise;
-    out.push(await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85)));
+  const pages = Math.min(doc.numPages, 200), batches = [];
+  if (doc.numPages > pages) toast(`${f.name}: נקראים ${pages} העמודים הראשונים מתוך ${doc.numPages}`);
+  for (let from = 1; from <= pages; from += perBatch) {
+    const to = Math.min(pages, from + perBatch - 1);
+    batches.push({ from, to, load: async () => {
+      const images = [], texts = [];
+      for (let n = from; n <= to; n++) {
+        const page = await doc.getPage(n), v1 = page.getViewport({ scale: 1 });
+        const vp = page.getViewport({ scale: Math.min(3, 1600 / Math.max(v1.width, v1.height)) });
+        const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+        const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+        await page.render({ canvasContext: g, viewport: vp }).promise;
+        images.push(await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85)));
+        try { const tc = await page.getTextContent(); texts.push(`--- page ${n} ---\n` + tc.items.map(t => t.str).join(' ').replace(/\s+/g, ' ').slice(0, 6000)); } catch (e) {}
+      }
+      return { images, text: texts.join('\n') };
+    } });
   }
-  if (doc.numPages > maxPages) toast(`${f.name}: נקראו ${maxPages} עמודים ראשונים מתוך ${doc.numPages}`);
-  return out;
+  return { pages, batches };
 }
-function scanPrompt(fileName, pages) {
+function scanPrompt(fileName, from, to, total, text) {
   const props = S.properties.map(p => `${p.id}: ${p.name} (${[p.address, p.city].filter(Boolean).join(', ')})`).join('\n');
   return `You are reading supplier invoices / receipts (Israeli, usually Hebrew) for a commercial real-estate company.
-The ${pages} attached image(s) are the pages of one document named "${fileName}", in order. A document may hold ONE or SEVERAL separate invoices.
-Return ONLY a JSON array, one object per distinct invoice (a multi-page invoice is ONE object; do not count receipts that only repeat an invoice already listed), with exactly these keys:
-{"page": first page number (1-based), "supplier": supplier/business name, "invoiceNo": invoice number as string or "", "date": invoice date as "YYYY-MM-DD" or "", "net": amount before VAT (number), "vat": VAT amount (number, 0 if none), "total": total to pay including VAT (number), "desc": short Hebrew description of what was bought (max 8 words), "type": one of ${JSON.stringify(EXPENSE_TYPES)}, "propertyId": the id of the property the invoice relates to from the list below (match by address or name on the invoice) or ""}
-If only the total is shown, compute net = total / 1.${String(num(S.settings.vat) || 18).padStart(2, '0')} and vat = total - net. Numbers must be plain numbers without currency signs or commas. If a page is not an invoice, skip it. If nothing is an invoice, return [].
+The attached image(s) are pages ${from} to ${to} (in order, one image per page) of a ${total}-page document named "${fileName}". The document may hold MANY separate invoices, often one per page; read EVERY page and list EVERY invoice on these pages.
+Return ONLY a JSON array, one object per distinct invoice (an invoice spanning several pages is ONE object; skip a receipt or copy that only repeats an invoice already listed; if page ${from} is the continuation of an invoice that started on an earlier page, still include it), with exactly these keys:
+{"page": the page number (within the whole document) where the invoice starts or appears, "supplier": supplier/business name, "invoiceNo": invoice number as string or "", "date": invoice date as "YYYY-MM-DD" or "", "net": amount before VAT (number), "vat": VAT amount (number, 0 if none), "total": total to pay including VAT (number), "desc": short Hebrew description of what was bought (max 8 words), "type": one of ${JSON.stringify(EXPENSE_TYPES)}, "propertyId": the id of the property the invoice relates to from the list below (match by address or name on the invoice) or ""}
+Numbers must be plain numbers without currency signs or commas. Skip pages that are not invoices (cover letters, statements). If none, return [].
 Properties:
-${props}`;
+${props}
+${text ? `\nThe PDF's extracted text for these pages (Hebrew may appear in reversed order; use it to double-check numbers):\n${text}` : ''}`;
 }
 async function scanRun() {
   if (!scan.files.length || scan.busy) return;
-  const maxImg = Math.max(1, Math.min(sampleImages.maxCount || 5, 10));
+  const per = Math.max(1, Math.min(sampleImages.maxCount || 5, 5));
   scan.busy = true; scan.items = []; scan.ctl = new AbortController(); renderScan();
-  const failed = [];
-  for (let fi = 0; fi < scan.files.length; fi++) {
+  const failed = [], vr = (num(S.settings.vat) || 18) / 100, seen = new Set();
+  let stop = false;
+  const addItems = (fi, res) => (Array.isArray(res) ? res : []).forEach(o => {
+    // fill in whichever of net / VAT / total the invoice did not state
+    let net = num(o.net), vat = num(o.vat), total = num(o.total);
+    if (!net && total) { net = Math.round(total / (1 + vr) * 100) / 100; vat = Math.round((total - net) * 100) / 100; }
+    if (!total) total = net + vat;
+    // an invoice crossing two batches can be reported twice
+    const key = fi + '|' + String(o.invoiceNo || '').trim() + '|' + Math.round(total) + '|' + String(o.supplier || '').trim();
+    if (seen.has(key)) return; seen.add(key);
+    scan.items.push({
+      file: fi, include: true, page: o.page || '', supplier: String(o.supplier || ''), invoiceNo: String(o.invoiceNo || ''),
+      date: /^\d{4}-\d{2}-\d{2}$/.test(o.date || '') ? o.date : new Date().toISOString().slice(0, 10),
+      net, vat, total, desc: String(o.desc || ''),
+      type: EXPENSE_TYPES.includes(o.type) ? o.type : 'אחר', propertyId: propById(o.propertyId) ? o.propertyId : ''
+    });
+  });
+  const why = e => ({ not_granted: 'לא אושרה גישה ל-Claude', rate_limited: 'יותר מדי בקשות, נסה שוב בעוד דקה', invalid_json: 'התשובה לא הייתה ברורה', image_rejected: 'הקובץ לא נתמך', too_big: 'הקובץ גדול מדי', sampling_disabled: 'Claude לא זמין בחשבון זה' }[e && e.code] || (e && e.message) || 'שגיאה');
+  for (let fi = 0; fi < scan.files.length && !stop; fi++) {
     const f = scan.files[fi];
-    scan.status = `קורא את ${f.name} (${fi + 1} מתוך ${scan.files.length})… זה יכול לקחת עד דקה.`; renderScan();
+    let plan;
     try {
       if (f.size > (sampleImages.maxInputBytes || 2e7) && f.type !== 'application/pdf') throw { code: 'too_big' };
-      const imgs = await fileToImages(f, maxImg);
-      const res = await sampleApi.json(scanPrompt(f.name, imgs.length), { images: imgs, signal: scan.ctl.signal });
-      const vr = (num(S.settings.vat) || 18) / 100;
-      (Array.isArray(res) ? res : []).map(o => {
-        // fill in whichever of net / VAT / total the invoice did not state
-        let net = num(o.net), vat = num(o.vat), total = num(o.total);
-        if (!net && total) { net = Math.round(total / (1 + vr) * 100) / 100; vat = Math.round((total - net) * 100) / 100; }
-        if (!total) total = net + vat;
-        return Object.assign({}, o, { net, vat, total });
-      }).forEach(o => scan.items.push({
-        file: fi, include: true, page: o.page || '', supplier: String(o.supplier || ''), invoiceNo: String(o.invoiceNo || ''),
-        date: /^\d{4}-\d{2}-\d{2}$/.test(o.date || '') ? o.date : new Date().toISOString().slice(0, 10),
-        net: o.net, vat: o.vat, total: o.total, desc: String(o.desc || ''),
-        type: EXPENSE_TYPES.includes(o.type) ? o.type : 'אחר', propertyId: propById(o.propertyId) ? o.propertyId : ''
-      }));
-      if (!Array.isArray(res) || !res.length) failed.push(f.name + ' (לא נמצאה חשבונית)');
-    } catch (e) {
-      if (e && e.code === 'cancelled') break;
-      const why = { not_granted: 'לא אושרה גישה ל-Claude', rate_limited: 'יותר מדי בקשות, נסה שוב בעוד דקה', invalid_json: 'התשובה לא הייתה ברורה', image_rejected: 'הקובץ לא נתמך', too_big: 'הקובץ גדול מדי', sampling_disabled: 'Claude לא זמין בחשבון זה' }[e && e.code] || (e && e.message) || 'שגיאה';
-      failed.push(`${f.name} (${why})`);
-      if (e && (e.code === 'not_granted' || e.code === 'sampling_disabled')) break;
-    }
+      plan = await fileBatches(f, per);
+    } catch (e) { failed.push(`${f.name} (${why(e)})`); continue; }
+    let done = 0, found0 = scan.items.length;
+    const status = () => { scan.status = `קורא את ${f.name}: ${done} מתוך ${plan.batches.length} קבוצות עמודים (${plan.pages} עמודים) · נמצאו עד כה ${scan.items.length} חשבוניות…`; renderScan(); };
+    status();
+    // two batches at a time; the viewer's Claude runs a couple of calls in parallel
+    const queue = plan.batches.slice();
+    const worker = async () => {
+      while (queue.length && !stop) {
+        const b = queue.shift();
+        try {
+          const { images, text } = await b.load();
+          addItems(fi, await sampleApi.json(scanPrompt(f.name, b.from, b.to, plan.pages, text), { images, signal: scan.ctl.signal }));
+        } catch (e) {
+          if (e && e.code === 'cancelled') { stop = true; return; }
+          failed.push(`${f.name} עמ׳ ${b.from}–${b.to} (${why(e)})`);
+          if (e && (e.code === 'not_granted' || e.code === 'sampling_disabled')) { stop = true; return; }
+        }
+        done++; status();
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    if (scan.items.length === found0 && !stop) failed.push(f.name + ' (לא נמצאה חשבונית)');
   }
+  scan.items.sort((a, b) => a.file - b.file || num(a.page) - num(b.page));
   scan.busy = false; scan.ctl = null;
   scan.status = `נמצאו ${scan.items.length} חשבוניות.` + (failed.length ? ' לא נקראו: ' + failed.join(', ') : '');
   renderScan();
