@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ניהול נכסים – ארליס</title>
+<title>ניהול נכסי ארליס</title>
 <style>
 :root{
   color-scheme: light;
@@ -38,7 +38,7 @@ body{margin:0;background:var(--page);color:var(--ink);font-family:system-ui,-app
 header{background:var(--surface);border-bottom:1px solid var(--line);padding:14px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 header h1{font-size:18px;margin:0}
 header .sub{color:var(--muted);font-size:13px}
-nav{display:flex;gap:4px;overflow-x:auto;padding:0 16px;background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+nav{display:flex;gap:4px;overflow-x:auto;padding:0 16px;background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:env(safe-area-inset-top,0px);z-index:5}
 nav button{background:none;border:0;border-bottom:3px solid transparent;padding:12px 14px;font:inherit;color:var(--ink-2);cursor:pointer;white-space:nowrap}
 nav button.active{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
 .badge{display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:var(--crit);color:#fff;font-size:11px;text-align:center;margin-inline-start:4px}
@@ -98,6 +98,11 @@ tfoot td{font-weight:600;background:var(--surface-2)}
 .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-inline-end:5px;vertical-align:-1px}
 .meter{height:14px;background:var(--surface-2);border-radius:7px;overflow:hidden;display:flex;gap:2px}
 .meter>div{height:100%}
+.sync{font-size:12px;padding:2px 8px;border-radius:10px;background:var(--surface-2);color:var(--ink-2);white-space:nowrap}
+.sync.ok{background:var(--good-bg);color:var(--good-ink)}.sync.err{background:var(--crit-bg);color:var(--crit)}
+.banner{background:var(--warn-bg);border:1px solid var(--ring);border-radius:10px;padding:12px 14px;margin-bottom:16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+#askBg{z-index:60}
+#toast{position:fixed;bottom:calc(20px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);background:var(--ink);color:var(--surface);padding:9px 16px;border-radius:8px;z-index:70;font-size:13px;max-width:90vw}
 #tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--surface);padding:6px 9px;border-radius:6px;font-size:12px;z-index:50;display:none;max-width:260px}
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:flex-start;justify-content:center;z-index:40;overflow-y:auto;padding:24px 12px}
 .modal-bg.open{display:flex}
@@ -120,6 +125,7 @@ tfoot td{font-weight:600;background:var(--surface-2)}
   </div>
   <div class="spacer"></div>
   <div class="row">
+    <span id="syncState" class="sync" hidden></span>
     <button class="btn sm" onclick="exportJSON()">⬇ גיבוי</button>
     <button class="btn sm" onclick="toggleTheme()">🌓</button>
   </div>
@@ -141,9 +147,13 @@ tfoot td{font-weight:600;background:var(--surface-2)}
   <section class="tab" id="tab-settings"></section>
 </main>
 <div class="modal-bg" id="modalBg"><div class="modal" id="modal"></div></div>
+<div class="modal-bg" id="askBg"><div class="modal" style="max-width:420px"><p id="askMsg" style="margin:0 0 14px;font-size:15px"></p>
+  <div class="row"><button class="btn primary" id="askYes">אישור</button><button class="btn" id="askNo">ביטול</button></div></div></div>
+<div id="toast" hidden></div>
 <div id="tip"></div>
 
 <script>
+document.documentElement.lang = 'he'; document.documentElement.dir = 'rtl';
 /* ============================== Constants ============================== */
 const STORE_KEY = 'arelis_pm_v1';
 const PAY_METHODS = ['העברה בנקאית','צ׳קים','הוראת קבע','מזומן','כרטיס אשראי','אחר'];
@@ -223,8 +233,99 @@ function seed() {
   };
 }
 function load() { try { const r = localStorage.getItem(STORE_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; } }
-let S = load() || seed();
-function save() { try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) { alert('שגיאה בשמירה: ' + e.message); } renderAll(); }
+const emptyState = () => ({ version: 1, settings: seed().settings, dismissed: {}, properties: [], incomes: [], expenses: [] });
+// 'cloud' = synced through the artifact database (all devices); 'local' = this browser only
+const inViewer = !!(window.claude && window.claude.use);
+let MODE = inViewer ? 'connecting' : 'local';
+let S = inViewer ? emptyState() : (load() || seed());
+let cloudReady = false;
+function save() {
+  if (MODE === 'cloud') syncToCloud();
+  else if (MODE === 'local') { try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) { toast('שגיאה בשמירה: ' + e.message); } }
+  renderAll();
+}
+
+/* ---------- Cloud sync (artifact database) ---------- */
+let dbApi = null, assetsApi = null, downloadsApi = null;
+const cache = {}, synced = {}, pending = new Set();
+let writeChain = Promise.resolve();
+const clone = o => JSON.parse(JSON.stringify(o));
+function docsOf(st) {
+  const m = { 'meta/settings': { settings: st.settings, dismissed: st.dismissed || {} } };
+  st.properties.forEach((p, i) => m['properties/' + p.id] = Object.assign(clone(p), { order: i }));
+  st.incomes.forEach(r => m['incomes/' + r.id] = clone(r));
+  st.expenses.forEach(r => m['expenses/' + r.id] = clone(r));
+  return m;
+}
+function stateOf(c) {
+  const list = col => Object.keys(c).filter(k => k.startsWith(col + '/')).map(k => clone(c[k]));
+  const meta = c['meta/settings'] || {};
+  return {
+    version: 1, settings: Object.assign(seed().settings, meta.settings || {}), dismissed: meta.dismissed || {},
+    properties: list('properties').sort((a, b) => (a.order || 0) - (b.order || 0)).map(p => { delete p.order; return p; }),
+    incomes: list('incomes'), expenses: list('expenses')
+  };
+}
+function setSync(state, msg) {
+  const el = $('#syncState'); el.hidden = false;
+  el.className = 'sync' + (state === 'ok' ? ' ok' : state === 'err' ? ' err' : '');
+  el.textContent = { ok: '☁ מסונכרן', saving: '☁ שומר…', err: '⚠ שגיאת שמירה', connecting: '☁ מתחבר…', local: 'שמירה מקומית בלבד' }[state];
+  el.title = msg || '';
+}
+function syncToCloud() {
+  const next = docsOf(S), ops = [];
+  for (const k in next) { const j = JSON.stringify(next[k]); if (synced[k] !== j) { synced[k] = j; cache[k] = next[k]; ops.push([k, next[k]]); } }
+  for (const k in synced) if (!(k in next)) { delete synced[k]; delete cache[k]; ops.push([k, null]); }
+  if (!ops.length) return;
+  ops.forEach(([k]) => pending.add(k));
+  setSync('saving');
+  writeChain = writeChain.then(async () => {
+    let failed = null;
+    for (const [k, v] of ops) {
+      try { v ? await dbApi.doc(k).set(v) : await dbApi.doc(k).delete(); }
+      catch (e) { failed = e; }
+      finally { pending.delete(k); }
+    }
+    if (failed) { setSync('err', failed.message); toast('השמירה בענן נכשלה: ' + (failed.message || failed.code) + '. נסה שוב.'); }
+    else if (!pending.size) setSync('ok');
+  });
+}
+function onRemote(col, snap) {
+  const seen = new Set();
+  snap.docs.forEach(d => { const k = col + '/' + d.id; seen.add(k); if (pending.has(k)) return; const v = clone(d.data()); cache[k] = v; synced[k] = JSON.stringify(v); });
+  Object.keys(cache).forEach(k => { if (k.startsWith(col + '/') && !seen.has(k) && !pending.has(k)) { delete cache[k]; delete synced[k]; } });
+}
+async function startCloud() {
+  if (!inViewer) return;
+  setSync('connecting');
+  const [db, assets, dl] = await Promise.all(['db', 'assets', 'downloads'].map(n => window.claude.use(n).catch(() => null)));
+  assetsApi = assets; downloadsApi = dl;
+  if (!db) { MODE = 'local'; S = load() || seed(); setSync('local', 'אין חיבור לענן – הנתונים נשמרים בדפדפן זה בלבד'); renderAll(); return; }
+  dbApi = db;
+  const got = { meta: false, properties: false, incomes: false, expenses: false };
+  const ready = () => {
+    if (!Object.values(got).every(Boolean)) return;
+    if (MODE !== 'cloud') { MODE = 'cloud'; setSync('ok'); }
+    cloudReady = true; S = stateOf(cache); renderAll();
+  };
+  const fail = e => { setSync('err', e.message); toast('החיבור לענן נותק. רענן את הדף.'); };
+  db.doc('meta/settings').onSnapshot(d => {
+    if (!pending.has('meta/settings')) { if (d.exists) { cache['meta/settings'] = clone(d.data()); synced['meta/settings'] = JSON.stringify(cache['meta/settings']); } else { delete cache['meta/settings']; delete synced['meta/settings']; } }
+    got.meta = true; ready();
+  }, fail);
+  ['properties', 'incomes', 'expenses'].forEach(col => db.collection(col).limit(1000).onSnapshot(snap => { onRemote(col, snap); got[col] = true; ready(); }, fail));
+}
+
+/* ---------- In-page dialogs (the viewer blocks alert/confirm) ---------- */
+function ask(msg) {
+  return new Promise(res => {
+    $('#askMsg').textContent = msg; $('#askBg').classList.add('open');
+    const done = v => { $('#askBg').classList.remove('open'); $('#askYes').onclick = $('#askNo').onclick = null; res(v); };
+    $('#askYes').onclick = () => done(true); $('#askNo').onclick = () => done(false);
+  });
+}
+let toastT;
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 3500); }
 
 /* ---------- IndexedDB for invoice files ---------- */
 let dbP = null;
@@ -342,6 +443,14 @@ function renderAll() {
   showTab(curTab);
 }
 
+function stateBanner() {
+  if (MODE === 'connecting') return '<div class="banner">☁ טוען את הנתונים מהענן…</div>';
+  if (MODE === 'cloud' && !S.properties.length) return `<div class="banner"><b>עדיין אין נכסים בענן.</b>
+    <span>אם הזנת נתונים בקובץ במחשב: לחץ שם "⬇ גיבוי" ואז ייבא את הקובץ כאן.</span><div class="spacer"></div>
+    <label class="btn primary" style="margin:0">⬆ ייבוא גיבוי<input type="file" accept=".json" style="display:none" onchange="importJSON(this.files[0])"></label>
+    <button class="btn" onclick="S=seed();save()">טען את רשימת הנכסים ההתחלתית</button></div>`;
+  return '';
+}
 /* ============================== Dashboard ============================== */
 function barChart(rows, opts = {}) {
   // rows: [{label, values:[v1,v2?], tips:[...]}]
@@ -377,7 +486,7 @@ function renderDashboard() {
   const pct = v => v.toFixed(0) + '%', sqm = v => fmt(v) + ' מ״ר';
   const upcoming = collectEvents().filter(e => e.days >= -30 && e.days <= 365).slice(0, 12);
 
-  $('#tab-dashboard').innerHTML = `
+  $('#tab-dashboard').innerHTML = `${stateBanner()}
   <div class="row" style="margin-bottom:12px">
     <h2 style="margin:0;font-size:18px">סיכום תיק הנכסים</h2><div class="spacer"></div>
     <label style="margin:0">חודש</label>
@@ -431,7 +540,7 @@ function renderDashboard() {
 function renderProperties() {
   const q = propFilter.trim();
   const props = S.properties.filter(p => !q || (p.name + p.city + p.address + p.units.map(u => u.tenant + u.name).join(' ')).includes(q));
-  $('#tab-properties').innerHTML = `
+  $('#tab-properties').innerHTML = `${stateBanner()}
   <div class="row" style="margin-bottom:12px">
     <input style="max-width:280px" placeholder="חיפוש נכס / שוכר…" value="${esc(propFilter)}" oninput="propFilter=this.value;renderProperties();const i=document.querySelector('#tab-properties input');i.focus();i.setSelectionRange(i.value.length,i.value.length)">
     <div class="spacer"></div>
@@ -493,10 +602,10 @@ function editProperty(pid) {
     <div class="grid g2">${field('שם הנכס', 'name', p.name, 'text', 'required')}${field('כתובת', 'address', p.address)}${field('עיר', 'city', p.city)}${field('אחוז בעלות', 'ownership', p.ownership, 'number', 'min="0" max="100"')}</div>
     <div style="margin-top:10px"><label>הערות</label><textarea name="notes">${esc(p.notes)}</textarea></div>
     <div class="actions"><button class="btn primary">שמור</button><button type="button" class="btn" onclick="closeModal()">ביטול</button></div></form>`);
-  $('#f').onsubmit = e => { e.preventDefault(); Object.assign(p, formData($('#f'))); if (!pid) S.properties.push(p); closeModal(); save(); };
+  $('#f').onsubmit = e => { e.preventDefault(); const cur = pid ? propById(pid) : p; if (!cur) return closeModal(); Object.assign(cur, formData($('#f'))); if (!pid) S.properties.push(cur); closeModal(); save(); };
 }
-function deleteProperty(pid) { const p = propById(pid); if (confirm(`למחוק את הנכס "${p.name}" וכל היחידות שלו?`)) { S.properties = S.properties.filter(x => x.id !== pid); save(); } }
-function deleteUnit(pid, id) { const p = propById(pid); const u = p.units.find(x => x.id === id); if (confirm(`למחוק את היחידה "${u.name}"?`)) { p.units = p.units.filter(x => x.id !== id); save(); } }
+async function deleteProperty(pid) { const p = propById(pid); if (await ask(`למחוק את הנכס "${p.name}" וכל היחידות שלו?`)) { S.properties = S.properties.filter(x => x.id !== pid); save(); } }
+async function deleteUnit(pid, id) { const u = propById(pid).units.find(x => x.id === id); if (await ask(`למחוק את היחידה "${u.name}"?`)) { const p = propById(pid); p.units = p.units.filter(x => x.id !== id); save(); } }
 
 function secRow(s = {}) {
   return `<div class="sec-row">
@@ -538,7 +647,9 @@ function editUnit(pid, id) {
     const d = formData($('#f'));
     Object.keys(d).forEach(k => { if (!(k in u)) delete d[k]; });
     d.securities = [...document.querySelectorAll('#secs .sec-row')].map(r => { const s = {}; r.querySelectorAll('[data-s]').forEach(el => s[el.dataset.s] = el.value.trim()); s.amount = num(s.amount); return s; });
-    Object.assign(u, d); if (!id) p.units.push(u); closeModal(); save();
+    const cp = propById(pid), cu = id ? cp?.units.find(x => x.id === id) : u;
+    if (!cp || !cu) return closeModal();
+    Object.assign(cu, d); if (!id) cp.units.push(cu); closeModal(); save();
   };
 }
 
@@ -561,9 +672,10 @@ function splitUnit(pid, id) {
   $('#nParts').onchange = e => draw(+e.target.value); draw(2);
   $('#doSplit').onclick = () => {
     const parts = [...document.querySelectorAll('#parts .part')].map(r => { const o = {}; r.querySelectorAll('[data-k]').forEach(el => o[el.dataset.k] = el.dataset.k === 'name' ? el.value : num(el.value)); return o; });
-    const idx = p.units.indexOf(u);
-    const created = parts.map((o, i) => i === 0 ? Object.assign(u, o) : newUnit({ ...o, floor: u.floor, use: u.use }));
-    p.units.splice(idx, 1, ...created); closeModal(); save();
+    const cp = propById(pid), cu = cp?.units.find(x => x.id === id);
+    if (!cu) return closeModal();
+    const created = parts.map((o, i) => i === 0 ? Object.assign(cu, o) : newUnit({ ...o, floor: cu.floor, use: cu.use }));
+    cp.units.splice(cp.units.indexOf(cu), 1, ...created); closeModal(); save();
   };
 }
 
@@ -576,7 +688,7 @@ function finTable(list, kind) {
   return `<div class="tbl-wrap"><table><tr><th>תאריך</th><th>נכס</th><th>סוג</th><th>תיאור</th>${kind === 'exp' ? '<th>ספק / חשבונית</th>' : ''}<th class="num">סכום</th><th>תדירות</th><th class="num">סה״כ ${y}</th><th></th></tr>
   ${list.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(r => `<tr>
     <td>${fmtDate(r.date)}${r.endDate ? `<div class="muted">עד ${fmtDate(r.endDate)}</div>` : ''}</td><td>${esc(propById(r.propertyId)?.name || 'כללי')}</td><td>${esc(r.type)}</td><td>${esc(r.desc)}</td>
-    ${kind === 'exp' ? `<td>${esc(r.supplier || '')}${r.invoiceNo ? `<div class="muted">#${esc(r.invoiceNo)}</div>` : ''}${r.fileId ? ` <a href="#" onclick="openFile('${r.fileId}');return false" title="${esc(r.fileName)}">📎</a>` : ''}</td>` : ''}
+    ${kind === 'exp' ? `<td>${esc(r.supplier || '')}${r.invoiceNo ? `<div class="muted">#${esc(r.invoiceNo)}</div>` : ''}${r.fileId ? ` ${fileLink(r, '📎')}` : ''}</td>` : ''}
     <td class="num">${ils(r.amount)}</td><td>${esc(r.freq)}</td><td class="num">${ils(recordAnnual(r, y))}</td>
     <td style="white-space:nowrap"><button class="btn sm" onclick="editRecord('${kind}','${r.id}')">✎</button><button class="btn sm danger" onclick="deleteRecord('${kind}','${r.id}')">🗑</button></td></tr>`).join('')}
   <tfoot><tr><td colspan="${kind === 'exp' ? 7 : 6}">סה״כ לשנת ${y}</td><td class="num">${ils(tot)}</td><td></td></tr></tfoot></table></div>`;
@@ -598,12 +710,15 @@ function editRecord(kind, id, preset) {
     ${kind === 'exp' ? field('ספק', 'supplier', r.supplier) + field('מספר חשבונית', 'invoiceNo', r.invoiceNo) : ''}
     </div><div style="margin-top:10px"><label>הערות</label><textarea name="notes">${esc(r.notes)}</textarea></div>
     <div class="actions"><button class="btn primary">שמור</button><button type="button" class="btn" onclick="closeModal()">ביטול</button></div></form>`);
-  $('#f').onsubmit = e => { e.preventDefault(); Object.assign(r, formData($('#f'))); if (!id) list.push(r); closeModal(); save(); };
+  $('#f').onsubmit = e => {
+    e.preventDefault(); const cl = kind === 'inc' ? S.incomes : S.expenses, cur = id ? cl.find(x => x.id === id) : r;
+    if (!cur) return closeModal(); Object.assign(cur, formData($('#f'))); if (!id) cl.push(cur); closeModal(); save();
+  };
 }
 async function deleteRecord(kind, id) {
-  if (!confirm('למחוק את הרשומה?')) return;
+  if (!(await ask('למחוק את הרשומה?'))) return;
   const key = kind === 'inc' ? 'incomes' : 'expenses', r = S[key].find(x => x.id === id);
-  if (r && r.fileId) { try { await delFile(r.fileId); } catch (e) {} }
+  if (r && r.fileId) { try { r.assetId ? await assetsApi?.delete(r.assetId) : await delFile(r.fileId); } catch (e) {} }
   S[key] = S[key].filter(x => x.id !== id); save();
 }
 
@@ -618,26 +733,35 @@ function renderInvoices() {
       ${sel('קטגוריה', 'type', 'אחר', EXPENSE_TYPES)}${field('ספק', 'supplier', '')}${field('מספר חשבונית', 'invoiceNo', '')}
       ${field('תאריך', 'date', new Date().toISOString().slice(0, 10), 'date', 'required')}${field('סכום ₪', 'amount', '', 'number', 'step="any" min="0" required')}${field('תיאור', 'desc', '')}
     </div><div class="actions" style="position:static"><button class="btn primary">שמור חשבונית</button></div></form>
-    <div class="muted" style="font-size:12px;margin-top:6px">החשבונית נשמרת כהוצאה (חד פעמית) ומופיעה גם בלשונית הכנסות והוצאות. הקבצים נשמרים בדפדפן זה בלבד ואינם נכללים בגיבוי JSON.</div>
+    <div class="muted" style="font-size:12px;margin-top:6px">החשבונית נשמרת כהוצאה (חד פעמית) ומופיעה גם בלשונית הכנסות והוצאות. ${MODE === 'cloud' ? 'הקבצים נשמרים בענן וזמינים מכל מכשיר.' : 'הקבצים נשמרים בדפדפן זה בלבד ואינם נכללים בגיבוי JSON.'}</div>
   </div>
   <div class="card"><h2>חשבוניות שנטענו (${withFiles.length})</h2>
     ${withFiles.length ? `<div class="tbl-wrap"><table><tr><th>תאריך</th><th>נכס</th><th>ספק</th><th>מס׳</th><th>קטגוריה</th><th class="num">סכום</th><th>קובץ</th><th></th></tr>
     ${withFiles.sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(r => `<tr><td>${fmtDate(r.date)}</td><td>${esc(propById(r.propertyId)?.name || 'כללי')}</td><td>${esc(r.supplier)}</td><td>${esc(r.invoiceNo)}</td><td>${esc(r.type)}</td><td class="num">${ils(r.amount)}</td>
-      <td><a href="#" onclick="openFile('${r.fileId}');return false">📎 ${esc(r.fileName)}</a></td><td><button class="btn sm danger" onclick="deleteRecord('exp','${r.id}')">🗑</button></td></tr>`).join('')}</table></div>` : '<div class="empty">טרם נטענו חשבוניות</div>'}
+      <td>${fileLink(r, '📎 ' + esc(r.fileName))}</td><td><button class="btn sm danger" onclick="deleteRecord('exp','${r.id}')">🗑</button></td></tr>`).join('')}</table></div>` : '<div class="empty">טרם נטענו חשבוניות</div>'}
   </div>`;
   $('#invForm').onsubmit = async e => {
     e.preventDefault();
     const f = e.target.file.files[0]; if (!f) return;
     const d = formData(e.target); delete d.file;
-    const fileId = uid();
-    try { await putFile(fileId, f); } catch (err) { alert('שמירת הקובץ נכשלה: ' + err.message); return; }
-    S.expenses.push(Object.assign({ id: uid(), freq: 'חד פעמי', endDate: '', notes: '', fileId, fileName: f.name }, d));
-    save();
+    let fileId = uid(), assetId = '';
+    const btn = e.target.querySelector('button.primary'); btn.disabled = true; btn.textContent = 'מעלה…';
+    try {
+      if (MODE === 'cloud' && assetsApi) { const up = await assetsApi.upload(f); assetId = fileId = up.id; }
+      else await putFile(fileId, f);
+    } catch (err) { toast('העלאת הקובץ נכשלה: ' + (err.message || err.code)); btn.disabled = false; btn.textContent = 'שמור חשבונית'; return; }
+    S.expenses.push(Object.assign({ id: uid(), freq: 'חד פעמי', endDate: '', notes: '', fileId, assetId, fileName: f.name }, d));
+    save(); toast('החשבונית נשמרה');
   };
 }
+// Cloud invoices are artifact assets (served at /_blob/<id>); local ones live in IndexedDB
+function fileLink(r, label) {
+  if (r.assetId) return `<a href="/_blob/${esc(r.assetId)}" target="_blank" rel="noopener" title="${esc(r.fileName)}">${label}</a>`;
+  return `<a href="#" onclick="openFile('${r.fileId}');return false" title="${esc(r.fileName)}">${label}</a>`;
+}
 async function openFile(id) {
-  try { const b = await getFile(id); if (!b) return alert('הקובץ לא נמצא בדפדפן זה'); window.open(URL.createObjectURL(b), '_blank'); }
-  catch (e) { alert('לא ניתן לפתוח את הקובץ: ' + e.message); }
+  try { const b = await getFile(id); if (!b) return toast('הקובץ שמור במכשיר אחר'); window.open(URL.createObjectURL(b), '_blank'); }
+  catch (e) { toast('לא ניתן לפתוח את הקובץ: ' + e.message); }
 }
 
 /* ============================== Alerts & email ============================== */
@@ -655,7 +779,7 @@ function renderAlerts() {
   window._act = act;
   $('#tab-alerts').innerHTML = `
   <div class="card"><div class="row" style="margin-bottom:8px"><h2 style="margin:0">התראות פעילות – ${lim} ימים לפני מועד</h2><div class="spacer"></div>
-    ${act.length ? `<a class="btn primary" href="${mailto(act)}">✉ שלח תזכורת במייל</a>` : ''}
+    ${act.length ? `<a class="btn primary" href="${mailto(act)}" target="_blank">✉ שלח תזכורת במייל</a><button class="btn" onclick="copyAlerts()">⧉ העתק תזכורות</button>` : ''}
     <button class="btn" onclick="downloadICS()">📅 הוסף ליומן (תזכורות אוטומטיות)</button></div>
     <div class="muted" style="font-size:12px;margin-bottom:8px">מייל אל ${esc(S.settings.email)}. לשליחה אוטומטית ללא פתיחת הקובץ – ראה הגדרות.</div>
     ${act.length ? act.map(e => `<div class="alert-item">${statusPill(e.date)}<b>${esc(e.kind)}</b><span>${esc(e.p.name)} · ${esc(e.who)}</span>
@@ -667,10 +791,15 @@ function renderAlerts() {
     ${all.map(e => `<tr><td>${statusPill(e.date)}</td><td>${esc(e.kind)}</td><td>${esc(e.p.name)}</td><td>${esc(e.who)}</td><td class="num">${e.days}</td></tr>`).join('')}</table></div>` : '<div class="empty">אין מועדים. הזן תאריכי סיום הסכם / צ׳קים / ביטחונות ביחידות.</div>'}
   </div>`;
 }
+async function copyAlerts() {
+  const txt = alertsText(window._act || []);
+  try { await navigator.clipboard.writeText(txt); toast('התזכורות הועתקו – הדבק במייל'); }
+  catch (e) { const t = document.createElement('textarea'); t.value = txt; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); toast('הועתק'); } catch (_) { toast('ההעתקה נכשלה'); } t.remove(); }
+}
 function dismissAlert(k) { S.dismissed = S.dismissed || {}; S.dismissed[k] = true; save(); }
 function downloadICS() {
   const ev = collectEvents().filter(e => e.days >= 0);
-  if (!ev.length) return alert('אין מועדים עתידיים');
+  if (!ev.length) return toast('אין מועדים עתידיים');
   const d = s => s.replace(/-/g, ''), lim = num(S.settings.reminderDays) || 30;
   const escI = s => String(s).replace(/[,;\\]/g, m => '\\' + m).replace(/\n/g, '\\n');
   const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15) + 'Z';
@@ -698,7 +827,7 @@ function renderSettings() {
       <label class="btn" style="margin:0">⬆ ייבוא גיבוי<input type="file" accept=".json" style="display:none" onchange="importJSON(this.files[0])"></label>
       <button class="btn" onclick="exportCSV()">⬇ ייצוא יחידות לאקסל</button>
       <div class="spacer"></div><button class="btn danger" onclick="resetData()">איפוס לנתוני ברירת מחדל</button></div>
-    <div class="muted" style="font-size:12px;margin-top:8px">הנתונים נשמרים בדפדפן במחשב זה. מומלץ לייצא גיבוי באופן קבוע ולשמור אותו בענן.</div></div>
+    <div class="muted" style="font-size:12px;margin-top:8px">${MODE === 'cloud' ? 'הנתונים נשמרים בענן ומסונכרנים בין כל המכשירים שלך. מומלץ לייצא גיבוי מדי פעם.' : 'הנתונים נשמרים בדפדפן במכשיר זה בלבד. מומלץ לייצא גיבוי באופן קבוע.'}</div></div>
   <div class="card"><h2>שליחת מיילים אוטומטית</h2>
     <p style="margin-top:0">קובץ HTML לא יכול לשלוח מייל בעצמו כשהוא סגור. יש שלוש אפשרויות:</p>
     <ol style="padding-inline-start:20px;margin:0">
@@ -706,16 +835,20 @@ function renderSettings() {
       <li><b>"הוסף ליומן"</b> – מייבא את כל המועדים ליומן (Google/Outlook) עם תזכורת ${esc(S.settings.reminderDays)} ימים לפני.</li>
       <li><b>שליחה אוטומטית מלאה</b> – ייצא גיבוי JSON והרץ מדי יום: <code>python html_reminders.py arelis_backup.json</code> (משתמש בהגדרות Gmail שבקובץ ‎.env).</li>
     </ol></div>`;
-  $('#sf').onsubmit = e => { e.preventDefault(); Object.assign(S.settings, formData($('#sf'))); save(); alert('נשמר'); };
+  $('#sf').onsubmit = e => { e.preventDefault(); Object.assign(S.settings, formData($('#sf'))); save(); toast('ההגדרות נשמרו'); };
 }
-function download(name, content, type) {
+async function download(name, content, type) {
+  if (downloadsApi) {
+    try { await downloadsApi.save({ filename: name, data: new Blob([content], { type }) }); } catch (e) { if (e.code !== 'declined') toast('ההורדה נכשלה: ' + (e.message || e.code)); }
+    return;
+  }
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([content], { type })); a.download = name; document.body.appendChild(a); a.click(); a.remove();
 }
 function exportJSON() { download('arelis_backup.json', JSON.stringify(S, null, 2), 'application/json'); }
 function importJSON(f) {
   if (!f) return;
   const r = new FileReader();
-  r.onload = () => { try { const d = JSON.parse(r.result); if (!d.properties) throw new Error('קובץ לא תקין'); if (confirm('הייבוא יחליף את כל הנתונים הקיימים. להמשיך?')) { S = d; S.incomes = S.incomes || []; S.expenses = S.expenses || []; save(); } } catch (e) { alert('שגיאה: ' + e.message); } };
+  r.onload = () => { try { const d = JSON.parse(r.result); if (!d.properties) throw new Error('קובץ לא תקין'); ask('הייבוא יחליף את כל הנתונים הקיימים. להמשיך?').then(ok => { if (ok) { S = d; S.incomes = S.incomes || []; S.expenses = S.expenses || []; S.dismissed = S.dismissed || {}; save(); toast('הגיבוי יובא'); } }); } catch (e) { toast('שגיאה: ' + e.message); } };
   r.readAsText(f);
 }
 function exportCSV() {
@@ -724,7 +857,7 @@ function exportCSV() {
   const csv = [H, ...rows].map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
   download('arelis_units.csv', '﻿' + csv, 'text/csv;charset=utf-8');
 }
-function resetData() { if (confirm('לאפס את כל הנתונים לברירת המחדל? (מומלץ לייצא גיבוי קודם)')) { S = seed(); save(); } }
+async function resetData() { if (await ask('לאפס את כל הנתונים לברירת המחדל? (מומלץ לייצא גיבוי קודם)')) { S = seed(); save(); } }
 function toggleTheme() {
   const r = document.documentElement, dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
   r.dataset.theme = dark ? 'light' : 'dark'; try { localStorage.setItem('arelis_theme', r.dataset.theme); } catch (e) {}
@@ -741,6 +874,7 @@ document.addEventListener('mousemove', e => {
 });
 
 renderAll();
+startCloud();
 </script>
 </body>
 </html>
