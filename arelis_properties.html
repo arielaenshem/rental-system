@@ -248,7 +248,7 @@ function save() {
 }
 
 /* ---------- Cloud sync (artifact database) ---------- */
-let dbApi = null, assetsApi = null, downloadsApi = null;
+let dbApi = null, assetsApi = null, downloadsApi = null, sampleApi = null, sampleImages = null;
 const cache = {}, synced = {}, pending = new Set();
 let writeChain = Promise.resolve();
 const clone = o => JSON.parse(JSON.stringify(o));
@@ -300,8 +300,9 @@ function onRemote(col, snap) {
 async function startCloud() {
   if (!inViewer) return;
   setSync('connecting');
-  const [db, assets, dl] = await Promise.all(['db', 'assets', 'downloads'].map(n => window.claude.use(n).catch(() => null)));
-  assetsApi = assets; downloadsApi = dl;
+  const [db, assets, dl, smp] = await Promise.all(['db', 'assets', 'downloads', 'sample'].map(n => window.claude.use(n).catch(() => null)));
+  assetsApi = assets; downloadsApi = dl; sampleApi = smp;
+  if (smp) { try { sampleImages = (await smp.limits()).images || null; } catch (e) { sampleImages = null; } }
   if (!db) { MODE = 'local'; S = load() || seed(); setSync('local', 'אין חיבור לענן – הנתונים נשמרים בדפדפן זה בלבד'); renderAll(); return; }
   dbApi = db;
   const got = { meta: false, properties: false, incomes: false, expenses: false };
@@ -730,7 +731,8 @@ async function deleteRecord(kind, id) {
 function renderInvoices() {
   const withFiles = S.expenses.filter(r => r.fileId);
   $('#tab-invoices').innerHTML = `
-  <div class="card"><h2>טעינת חשבונית הוצאה</h2>
+  <div class="card" id="scanCard">${scanCardHTML()}</div>
+  <div class="card"><h2>טעינת חשבונית ידנית</h2>
     <form id="invForm"><div class="grid g4">
       <div><label>קובץ (PDF / תמונה)</label><input type="file" name="file" accept=".pdf,image/*" required></div>
       <div><label>נכס</label><select name="propertyId">${propOptions('')}</select></div>
@@ -758,6 +760,140 @@ function renderInvoices() {
     save(); toast('החשבונית נשמרה');
   };
 }
+/* ---------- Automatic invoice reading (Claude reads PDFs / photos) ---------- */
+const scan = { files: [], items: [], busy: false, status: '', ctl: null };
+function scanCardHTML() {
+  const ok = sampleApi && sampleImages;
+  if (!ok) return `<h2>קריאה אוטומטית של חשבוניות</h2><div class="empty">${MODE === 'connecting' ? 'טוען…' : 'הקריאה האוטומטית זמינה בגרסה המסונכרנת של המערכת (בקישור ב-claude.ai).'}</div>`;
+  const inc = scan.items.filter(i => i.include);
+  const sumNet = inc.reduce((t, i) => t + num(i.net), 0), sumVat = inc.reduce((t, i) => t + num(i.vat), 0), sumTot = inc.reduce((t, i) => t + num(i.total), 0);
+  const byCat = {}; inc.forEach(i => byCat[i.type] = (byCat[i.type] || 0) + num(i.net));
+  return `<div class="row" style="margin-bottom:10px"><h2 style="margin:0">קריאה אוטומטית של חשבוניות</h2><span class="muted">PDF או צילום · אפשר כמה חשבוניות בכל מסמך</span></div>
+    <div class="row">
+      <label class="btn" style="margin:0">📄 בחר קבצים<input id="scanInput" type="file" multiple accept=".pdf,image/jpeg,image/png,image/webp" style="display:none" onchange="scanPick(this.files)"></label>
+      <span class="muted">${scan.files.length ? scan.files.map(f => esc(f.name)).join(', ') : 'לא נבחרו קבצים'}</span>
+      <div class="spacer"></div>
+      ${scan.busy ? `<button class="btn" onclick="scan.ctl&&scan.ctl.abort()">עצור</button>` : `<button class="btn primary" ${scan.files.length ? '' : 'disabled'} onclick="scanRun()">🔍 קרא חשבוניות</button>`}
+    </div>
+    ${scan.status ? `<div class="muted" style="margin-top:8px">${esc(scan.status)}</div>` : ''}
+    ${scan.items.length ? `<div class="tbl-wrap" style="margin-top:12px"><table>
+      <tr><th></th><th>קובץ</th><th>ספק</th><th>מס׳</th><th>תאריך</th><th>נכס</th><th>קטגוריה</th><th>תיאור</th><th class="num">לפני מע״מ</th><th class="num">מע״מ</th><th class="num">סה״כ</th></tr>
+      ${scan.items.map((i, k) => `<tr>
+        <td><input type="checkbox" style="width:auto" ${i.include ? 'checked' : ''} onchange="scanSet(${k},'include',this.checked)"></td>
+        <td class="muted">${esc(scan.files[i.file]?.name || '')}${i.page ? ' · עמ׳ ' + esc(i.page) : ''}</td>
+        <td><input value="${esc(i.supplier)}" onchange="scanSet(${k},'supplier',this.value)" style="min-width:130px"></td>
+        <td><input value="${esc(i.invoiceNo)}" onchange="scanSet(${k},'invoiceNo',this.value)" style="width:90px"></td>
+        <td><input type="date" value="${esc(i.date)}" onchange="scanSet(${k},'date',this.value)"></td>
+        <td><select style="min-width:140px" onchange="scanSet(${k},'propertyId',this.value)">${propOptions(i.propertyId)}</select></td>
+        <td><select style="min-width:110px" onchange="scanSet(${k},'type',this.value)">${EXPENSE_TYPES.map(o => `<option ${o === i.type ? 'selected' : ''}>${o}</option>`).join('')}</select></td>
+        <td><input value="${esc(i.desc)}" onchange="scanSet(${k},'desc',this.value)" style="min-width:150px"></td>
+        <td class="num"><input type="number" step="any" value="${num(i.net)}" onchange="scanSet(${k},'net',+this.value)" style="width:100px"></td>
+        <td class="num"><input type="number" step="any" value="${num(i.vat)}" onchange="scanSet(${k},'vat',+this.value)" style="width:90px"></td>
+        <td class="num"><input type="number" step="any" value="${num(i.total)}" onchange="scanSet(${k},'total',+this.value)" style="width:100px"></td></tr>`).join('')}
+      <tfoot><tr><td colspan="8">סה״כ ${inc.length} חשבוניות מסומנות</td><td class="num">${ils(sumNet)}</td><td class="num">${ils(sumVat)}</td><td class="num">${ils(sumTot)}</td></tr></tfoot></table></div>
+      ${Object.keys(byCat).length ? `<div class="row" style="margin-top:10px">${Object.entries(byCat).map(([c, v]) => `<span class="pill neutral">${esc(c)}: ${ils(v)}</span>`).join('')}</div>` : ''}
+      <div class="row" style="margin-top:12px"><button class="btn primary" ${inc.length && !scan.busy ? '' : 'disabled'} onclick="scanSave()">✓ הוסף ${inc.length} להוצאות (סכום לפני מע״מ)</button>
+        <button class="btn" onclick="scan.items=[];scan.files=[];scan.status='';renderScan()">נקה</button>
+        <span class="muted" style="font-size:12px">בדוק את הנתונים לפני השמירה – הקריאה האוטומטית עלולה לטעות.</span></div>` : ''}`;
+}
+function renderScan() { const c = document.getElementById('scanCard'); if (c) c.innerHTML = scanCardHTML(); }
+function scanPick(list) { scan.files = [...list]; scan.items = []; scan.status = ''; renderScan(); }
+function scanSet(k, f, v) { scan.items[k][f] = v; renderScan(); }
+
+let pdfjsP = null;
+function loadPdfJs() {
+  if (pdfjsP) return pdfjsP;
+  pdfjsP = new Promise((res, rej) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    sc.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; res(window.pdfjsLib); };
+    sc.onerror = () => { pdfjsP = null; rej(new Error('טעינת קורא ה-PDF נכשלה')); };
+    document.head.appendChild(sc);
+  });
+  return pdfjsP;
+}
+// Turns a file into page images (JPEG blobs); PDFs are rendered page by page
+async function fileToImages(f, maxPages) {
+  if (f.type !== 'application/pdf' && !/\.pdf$/i.test(f.name)) return [f];
+  const pdfjs = await loadPdfJs();
+  const doc = await pdfjs.getDocument({ data: await f.arrayBuffer() }).promise;
+  const out = [];
+  for (let n = 1; n <= Math.min(doc.numPages, maxPages); n++) {
+    const page = await doc.getPage(n), v1 = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: Math.min(3, 1600 / Math.max(v1.width, v1.height)) });
+    const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: g, viewport: vp }).promise;
+    out.push(await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85)));
+  }
+  if (doc.numPages > maxPages) toast(`${f.name}: נקראו ${maxPages} עמודים ראשונים מתוך ${doc.numPages}`);
+  return out;
+}
+function scanPrompt(fileName, pages) {
+  const props = S.properties.map(p => `${p.id}: ${p.name} (${[p.address, p.city].filter(Boolean).join(', ')})`).join('\n');
+  return `You are reading supplier invoices / receipts (Israeli, usually Hebrew) for a commercial real-estate company.
+The ${pages} attached image(s) are the pages of one document named "${fileName}", in order. A document may hold ONE or SEVERAL separate invoices.
+Return ONLY a JSON array, one object per distinct invoice (a multi-page invoice is ONE object; do not count receipts that only repeat an invoice already listed), with exactly these keys:
+{"page": first page number (1-based), "supplier": supplier/business name, "invoiceNo": invoice number as string or "", "date": invoice date as "YYYY-MM-DD" or "", "net": amount before VAT (number), "vat": VAT amount (number, 0 if none), "total": total to pay including VAT (number), "desc": short Hebrew description of what was bought (max 8 words), "type": one of ${JSON.stringify(EXPENSE_TYPES)}, "propertyId": the id of the property the invoice relates to from the list below (match by address or name on the invoice) or ""}
+If only the total is shown, compute net = total / 1.${String(num(S.settings.vat) || 18).padStart(2, '0')} and vat = total - net. Numbers must be plain numbers without currency signs or commas. If a page is not an invoice, skip it. If nothing is an invoice, return [].
+Properties:
+${props}`;
+}
+async function scanRun() {
+  if (!scan.files.length || scan.busy) return;
+  const maxImg = Math.max(1, Math.min(sampleImages.maxCount || 5, 10));
+  scan.busy = true; scan.items = []; scan.ctl = new AbortController(); renderScan();
+  const failed = [];
+  for (let fi = 0; fi < scan.files.length; fi++) {
+    const f = scan.files[fi];
+    scan.status = `קורא את ${f.name} (${fi + 1} מתוך ${scan.files.length})… זה יכול לקחת עד דקה.`; renderScan();
+    try {
+      if (f.size > (sampleImages.maxInputBytes || 2e7) && f.type !== 'application/pdf') throw { code: 'too_big' };
+      const imgs = await fileToImages(f, maxImg);
+      const res = await sampleApi.json(scanPrompt(f.name, imgs.length), { images: imgs, signal: scan.ctl.signal });
+      const vr = (num(S.settings.vat) || 18) / 100;
+      (Array.isArray(res) ? res : []).map(o => {
+        // fill in whichever of net / VAT / total the invoice did not state
+        let net = num(o.net), vat = num(o.vat), total = num(o.total);
+        if (!net && total) { net = Math.round(total / (1 + vr) * 100) / 100; vat = Math.round((total - net) * 100) / 100; }
+        if (!total) total = net + vat;
+        return Object.assign({}, o, { net, vat, total });
+      }).forEach(o => scan.items.push({
+        file: fi, include: true, page: o.page || '', supplier: String(o.supplier || ''), invoiceNo: String(o.invoiceNo || ''),
+        date: /^\d{4}-\d{2}-\d{2}$/.test(o.date || '') ? o.date : new Date().toISOString().slice(0, 10),
+        net: o.net, vat: o.vat, total: o.total, desc: String(o.desc || ''),
+        type: EXPENSE_TYPES.includes(o.type) ? o.type : 'אחר', propertyId: propById(o.propertyId) ? o.propertyId : ''
+      }));
+      if (!Array.isArray(res) || !res.length) failed.push(f.name + ' (לא נמצאה חשבונית)');
+    } catch (e) {
+      if (e && e.code === 'cancelled') break;
+      const why = { not_granted: 'לא אושרה גישה ל-Claude', rate_limited: 'יותר מדי בקשות, נסה שוב בעוד דקה', invalid_json: 'התשובה לא הייתה ברורה', image_rejected: 'הקובץ לא נתמך', too_big: 'הקובץ גדול מדי', sampling_disabled: 'Claude לא זמין בחשבון זה' }[e && e.code] || (e && e.message) || 'שגיאה';
+      failed.push(`${f.name} (${why})`);
+      if (e && (e.code === 'not_granted' || e.code === 'sampling_disabled')) break;
+    }
+  }
+  scan.busy = false; scan.ctl = null;
+  scan.status = `נמצאו ${scan.items.length} חשבוניות.` + (failed.length ? ' לא נקראו: ' + failed.join(', ') : '');
+  renderScan();
+}
+async function scanSave() {
+  const inc = scan.items.filter(i => i.include); if (!inc.length) return;
+  scan.busy = true; scan.status = 'שומר…'; renderScan();
+  const uploaded = {};
+  for (const i of inc) {
+    if (!(i.file in uploaded)) {
+      const f = scan.files[i.file]; let fileId = uid(), assetId = '';
+      try { if (MODE === 'cloud' && assetsApi) { const up = await assetsApi.upload(f); assetId = fileId = up.id; } else await putFile(fileId, f); }
+      catch (e) { fileId = ''; toast('העלאת ' + f.name + ' נכשלה – ההוצאה נשמרת בלי קובץ'); }
+      uploaded[i.file] = { fileId, assetId, fileName: f.name };
+    }
+    S.expenses.push(Object.assign({ id: uid(), propertyId: i.propertyId, type: i.type, desc: i.desc || i.supplier, amount: num(i.net), freq: 'חד פעמי', date: i.date, endDate: '',
+      supplier: i.supplier, invoiceNo: i.invoiceNo, notes: `מע״מ ${ils(i.vat)} · סה״כ כולל מע״מ ${ils(i.total)}` }, uploaded[i.file].fileId ? uploaded[i.file] : {}));
+  }
+  const n = inc.length; scan.items = []; scan.files = []; scan.busy = false; scan.status = `נוספו ${n} הוצאות.`;
+  save(); toast(`נוספו ${n} הוצאות`);
+}
+
 // Cloud invoices are artifact assets (served at /_blob/<id>); local ones live in IndexedDB
 function fileLink(r, label) {
   if (r.assetId) return `<a href="/_blob/${esc(r.assetId)}" target="_blank" rel="noopener" title="${esc(r.fileName)}">${label}</a>`;
