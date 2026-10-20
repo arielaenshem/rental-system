@@ -416,22 +416,37 @@ function spitzerPayment(l) {
   if (!n || !P) return 0;
   return r ? P * r / (1 - Math.pow(1 + r, -n)) : P / n;
 }
-// Estimated outstanding principal today: a manual balance wins; else amortize Spitzer / equal-principal schedules
-function loanBalance(l) {
-  if (l.balance !== '' && l.balance != null && num(l.balance) > 0) return num(l.balance);
-  const per = FREQ_PER_YEAR[l.freq] || 12, step = 12 / per, first = parseDate(l.firstPayment || l.start), P = num(l.principal);
-  if (!first || !P) return P;
-  const now = today(), n = loanPeriods(l);
-  let k = now < first ? 0 : Math.floor(monthsBetween(first, now) / step) + 1;
-  if (n) k = Math.min(k, n);
-  const r = num(l.rate) / 100 / per;
-  if (n && k >= n) return 0;
-  if (l.type === 'בלון' || l.type === 'גרייס') return P;
-  if (l.type === 'קרן שווה' && n) return Math.max(0, P * (1 - k / n));
+// Payment dates: from the first payment every (12 / per-year) months, up to the last payment date
+function loanPayDates(l) {
+  const step = 12 / (FREQ_PER_YEAR[l.freq] || 12), first = parseDate(l.firstPayment || l.start), last = parseDate(l.end), out = [];
+  if (!first) return out;
+  for (let k = 0; k < 1200; k++) {
+    const d = new Date(first.getFullYear(), first.getMonth() + k * step, Math.min(first.getDate(), 28));
+    if (last ? d > last : k >= 600) break;
+    out.push(d);
+  }
+  return out;
+}
+// Date the balance is shown for: today in the current year, else the last day of the chosen year
+const balanceAsOf = y => y === new Date().getFullYear() ? today() : new Date(y, 11, 31);
+const balanceLabel = y => y === new Date().getFullYear() ? 'נכון להיום' : `ל-31.12.${y}`;
+// Outstanding principal on a date. A balance entered from the bank statement is the starting point from its
+// date onward; otherwise the schedule runs from the original amount (Spitzer, equal principal, balloon/grace)
+function loanBalance(l, asOf = today()) {
+  const P = num(l.principal), per = FREQ_PER_YEAR[l.freq] || 12, r = num(l.rate) / 100 / per;
+  if (l.start && asOf < parseDate(l.start)) return 0;
+  const dates = loanPayDates(l), n = dates.length;
+  if (l.end && n && dates[n - 1] <= asOf) return 0;
+  const manualAt = parseDate(l.balanceDate) || null;
+  const useManual = num(l.balance) > 0 && (!manualAt || asOf >= manualAt);
+  const B = useManual ? num(l.balance) : P, from = useManual && manualAt ? manualAt : new Date(0);
+  const k = dates.filter(d => d > from && d <= asOf).length;
+  if (!k) return B;
+  if (l.type === 'בלון' || l.type === 'גרייס') return B;
+  if (l.type === 'קרן שווה') return Math.max(0, B - k * (n ? P / n : 0));
   const pay = num(l.payment) || spitzerPayment(l);
-  if (!pay) return P;
-  const bal = r ? P * Math.pow(1 + r, k) - pay * (Math.pow(1 + r, k) - 1) / r : P - pay * k;
-  return Math.max(0, bal);
+  if (!pay) return B;
+  return Math.max(0, r ? B * Math.pow(1 + r, k) - pay * (Math.pow(1 + r, k) - 1) / r : B - pay * k);
 }
 function totals(y, mo) {
   const t = { area: 0, leasedArea: 0, parking: 0, units: 0, leased: 0, mRent: 0, mMgmt: 0, mOther: 0, mExp: 0, mLoan: 0, rentY: 0, otherY: 0, expY: 0, loanY: 0, byProp: {} };
@@ -531,7 +546,7 @@ function renderDashboard() {
   const y = dashYear, mo = dashMonth, t = totals(y, mo), w = wale(), alerts = activeAlerts();
   const occ = t.area ? t.leasedArea / t.area * 100 : 0;
   const incY = t.rentY + t.otherY, noi = incY - t.expY, fcfY = noi - t.loanY;
-  const debt = (S.loans || []).reduce((s, l) => s + loanBalance(l) * loanShare(l), 0);
+  const debt = (S.loans || []).reduce((s, l) => s + loanBalance(l, balanceAsOf(y)) * loanShare(l), 0);
   const incM = t.mRent + t.mMgmt + t.mOther, netM = incM - t.mExp, fcfM = netM - t.mLoan, monthLbl = MONTH_NAMES[mo] + ' ' + y;
   const monthly = MONTHS.map(m => { const x = totals(y, m); return { m, rent: x.mRent, mgmt: x.mMgmt, other: x.mOther, exp: x.mExp, loan: x.mLoan, net: x.mRent + x.mMgmt + x.mOther - x.mExp - x.mLoan }; });
   const mRows = monthly.map(r => ({ label: MONTH_NAMES[r.m], values: [r.rent + r.mgmt + r.other, r.exp] }));
@@ -567,7 +582,7 @@ function renderDashboard() {
     <div class="kpi"><div class="k">תזרים חופשי – ${monthLbl}</div><div class="v" style="color:${fcfM < 0 ? 'var(--crit)' : 'inherit'}">${ils(fcfM)}</div><div class="d">אחרי הוצאות ${ils(t.mExp)} והלוואות ${ils(t.mLoan)}</div></div>
     <div class="kpi"><div class="k">הכנסות ${y}</div><div class="v">${fmtShort(incY)}</div><div class="d">מתוכן נוספות ${fmtShort(t.otherY)}</div></div>
     <div class="kpi"><div class="k">הוצאות ${y}</div><div class="v">${fmtShort(t.expY)}</div><div class="d">NOI: ${fmtShort(noi)}</div></div>
-    <div class="kpi"><div class="k">החזרי הלוואות ${y}</div><div class="v">${fmtShort(t.loanY)}</div><div class="d">יתרת חוב משוערת ${fmtShort(debt)}</div></div>
+    <div class="kpi"><div class="k">החזרי הלוואות ${y}</div><div class="v">${fmtShort(t.loanY)}</div><div class="d">יתרת חוב ${balanceLabel(y)} ${fmtShort(debt)}</div></div>
     <div class="kpi"><div class="k">תזרים חופשי ${y}</div><div class="v" style="color:${fcfY < 0 ? 'var(--crit)' : 'inherit'}">${fmtShort(fcfY)}</div><div class="d">הכנסות − הוצאות − הלוואות</div></div>
     <div class="kpi"><div class="k">משך שכירות ממוצע (WALE)</div><div class="v">${w === null ? '—' : w.toFixed(1) + ' שנים'}</div><div class="d">משוקלל לפי שכ״ד</div></div>
     <div class="kpi"><div class="k">התראות פעילות</div><div class="v" style="color:${alerts.length ? 'var(--crit)' : 'var(--good-ink)'}">${alerts.length ? '⚠ ' : '✓ '}${alerts.length}</div><div class="d">בטווח ${S.settings.reminderDays} ימים</div></div>
@@ -793,29 +808,29 @@ function renderLoans() {
   const y = dashYear, loans = S.loans || [];
   const tot = { pay: 0, year: 0, bal: 0, principal: 0 };
   const rows = loans.map(l => {
-    const sh = loanShare(l), yr = loanAnnual(l, y) * sh, bal = loanBalance(l) * sh, p = propById(l.propertyId);
+    const sh = loanShare(l), yr = loanAnnual(l, y) * sh, bal = loanBalance(l, balanceAsOf(y)) * sh, p = propById(l.propertyId);
     tot.year += yr; tot.bal += bal; tot.principal += num(l.principal) * sh; tot.pay += loanMonth(l, y, dashMonth) * sh;
     const left = daysUntil(l.end);
     return `<tr><td><b>${esc(l.lender || '—')}</b>${l.number ? `<div class="muted">#${esc(l.number)}</div>` : ''}</td><td>${esc(p?.name || 'כללי')}</td><td>${esc(l.type)}${l.indexed ? '<div class="muted">צמוד מדד</div>' : ''}</td>
       <td class="num">${ils(l.principal)}</td><td class="num">${num(l.rate) ? num(l.rate) + '%' : '—'}</td><td class="num">${ils(l.payment)}<div class="muted">${esc(l.freq)}</div>${sh !== 1 ? `<div class="muted">חלק החברה ${ils(num(l.payment) * sh)}</div>` : ''}</td>
       <td class="num">${loanShareLabel(l)}</td>
       <td>${fmtDate(l.firstPayment || l.start)}</td><td>${l.end ? statusPill(l.end) : '—'}${left !== null && left > 0 ? `<div class="muted">${Math.ceil(left / 30.4)} חודשים</div>` : ''}</td>
-      <td class="num">${ils(yr)}</td><td class="num">${ils(bal)}${l.balance !== '' && l.balance != null && num(l.balance) > 0 ? '' : '<div class="muted">משוער</div>'}</td>
+      <td class="num">${ils(yr)}</td><td class="num">${ils(bal)}<div class="muted">משוער</div></td>
       <td style="white-space:nowrap"><button class="btn sm" onclick="editLoan('${l.id}')">✎</button><button class="btn sm danger" onclick="deleteLoan('${l.id}')">🗑</button></td></tr>`;
   });
   $('#tab-loans').innerHTML = `
   <div class="row" style="margin-bottom:12px"><h2 style="margin:0;font-size:18px">הלוואות</h2><div class="spacer"></div><label style="margin:0">שנה</label>${yearSelect()}<button class="btn primary" onclick="editLoan()">+ הלוואה</button></div>
   <div class="kpis">
     <div class="kpi"><div class="k">מספר הלוואות</div><div class="v">${loans.length}</div><div class="d">חלק החברה בסכום המקורי ${fmtShort(tot.principal)}</div></div>
-    <div class="kpi"><div class="k">יתרת חוב משוערת</div><div class="v">${fmtShort(tot.bal)}</div><div class="d">נכון להיום</div></div>
+    <div class="kpi"><div class="k">יתרת חוב משוערת</div><div class="v">${fmtShort(tot.bal)}</div><div class="d">${balanceLabel(y)}</div></div>
     <div class="kpi"><div class="k">החזר ב${MONTH_NAMES[dashMonth]} ${y}</div><div class="v">${ils(tot.pay)}</div><div class="d">החודש שנבחר בדשבורד</div></div>
     <div class="kpi"><div class="k">החזרים ב-${y}</div><div class="v">${fmtShort(tot.year)}</div><div class="d">נכנס לתזרים החופשי בדשבורד</div></div>
   </div>
   <div class="card">${loans.length ? `<div class="tbl-wrap"><table>
-    <tr><th>מלווה</th><th>נכס</th><th>סוג</th><th class="num">סכום הלוואה</th><th class="num">ריבית</th><th class="num">תשלום</th><th class="num">חלק החברה</th><th>תשלום ראשון</th><th>סיום</th><th class="num">החזרים ${y} (חלק החברה)</th><th class="num">יתרה (חלק החברה)</th><th></th></tr>
+    <tr><th>מלווה</th><th>נכס</th><th>סוג</th><th class="num">סכום הלוואה</th><th class="num">ריבית</th><th class="num">תשלום</th><th class="num">חלק החברה</th><th>תשלום ראשון</th><th>סיום</th><th class="num">החזרים ${y} (חלק החברה)</th><th class="num">יתרה ${balanceLabel(y)} (חלק החברה)</th><th></th></tr>
     ${rows.join('')}
     <tfoot><tr><td colspan="3">סה״כ חלק החברה</td><td class="num">${ils(tot.principal)}</td><td></td><td></td><td></td><td></td><td></td><td class="num">${ils(tot.year)}</td><td class="num">${ils(tot.bal)}</td><td></td></tr></tfoot></table></div>
-    <div class="muted" style="font-size:12px;margin-top:6px">ההחזרים והיתרה מוצגים לפי חלק החברה בהלוואה, וכך הם נכנסים לתזרים החופשי. היתרה מחושבת לפי לוח שפיצר / קרן שווה, אלא אם הוזנה יתרה ידנית. בהלוואה צמודה כדאי לעדכן את התשלום והיתרה לפי דוח הבנק.</div>`
+    <div class="muted" style="font-size:12px;margin-top:6px">ההחזרים והיתרה מוצגים לפי חלק החברה בהלוואה, וכך הם נכנסים לתזרים החופשי. היתרה מחושבת לסוף השנה שנבחרה (בשנה הנוכחית – להיום) לפי לוח שפיצר / קרן שווה. אם הוזנה יתרה מדוח הבנק, החישוב ממשיך ממנה מתאריך הדוח והלאה. בהלוואה צמודה כדאי לעדכן את התשלום והיתרה לפי דוח הבנק.</div>`
     : '<div class="empty">אין הלוואות. לחץ "+ הלוואה" כדי להוסיף.</div>'}</div>`;
 }
 function editLoan(id) {
@@ -828,7 +843,7 @@ function editLoan(id) {
     ${field('תאריך קבלת ההלוואה', 'start', l.start, 'date')}${field('תאריך תשלום ראשון', 'firstPayment', l.firstPayment, 'date')}
     ${field('תאריך תשלום אחרון', 'end', l.end, 'date')}
     <div><label>תשלום לכל מועד ₪</label><div class="row" style="flex-wrap:nowrap"><input name="payment" type="number" step="any" min="0" value="${esc(l.payment)}"><button type="button" class="btn sm" onclick="calcLoanPayment()">חשב שפיצר</button></div></div>
-    ${field('יתרה נוכחית ₪ (לפי הבנק, לא חובה)', 'balance', l.balance, 'number', 'step="any" min="0"')}
+    ${field('יתרה לפי דוח הבנק ₪ (לא חובה)', 'balance', l.balance, 'number', 'step="any" min="0"')}${field('היתרה נכונה לתאריך', 'balanceDate', l.balanceDate || new Date().toLocaleDateString('sv'), 'date')}
     <div><label>חלק החברה בהלוואה</label><select name="shareMode" onchange="document.getElementById('sharePctBox').hidden=this.value!=='custom'">
       <option value="full" ${!l.shareMode || l.shareMode === 'full' ? 'selected' : ''}>100% – כל ההלוואה של החברה</option>
       <option value="property" ${l.shareMode === 'property' ? 'selected' : ''}>לפי אחוז הבעלות בנכס</option>
@@ -840,7 +855,7 @@ function editLoan(id) {
   $('#f').onsubmit = e => {
     e.preventDefault(); S.loans = S.loans || [];
     const cur = id ? S.loans.find(x => x.id === id) : l; if (!cur) return closeModal();
-    const d = formData($('#f')); if (d.balance === 0) d.balance = '';
+    const d = formData($('#f')); if (d.balance === 0) { d.balance = ''; d.balanceDate = ''; }
     Object.assign(cur, d); if (!id) S.loans.push(cur); closeModal(); save();
   };
 }
