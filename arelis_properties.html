@@ -136,6 +136,7 @@ tfoot td{font-weight:600;background:var(--surface-2)}
   <button data-tab="dashboard">דשבורד</button>
   <button data-tab="properties">נכסים ושוכרים</button>
   <button data-tab="finance">הכנסות והוצאות</button>
+  <button data-tab="loans">הלוואות</button>
   <button data-tab="invoices">חשבוניות</button>
   <button data-tab="alerts">התראות <span id="alertBadge"></span></button>
   <button data-tab="settings">הגדרות</button>
@@ -144,6 +145,7 @@ tfoot td{font-weight:600;background:var(--surface-2)}
   <section class="tab" id="tab-dashboard"></section>
   <section class="tab" id="tab-properties"></section>
   <section class="tab" id="tab-finance"></section>
+  <section class="tab" id="tab-loans"></section>
   <section class="tab" id="tab-invoices"></section>
   <section class="tab" id="tab-alerts"></section>
   <section class="tab" id="tab-settings"></section>
@@ -231,15 +233,16 @@ function seed() {
         { name: 'משרדים', area: 850, use: 'משרדים' }
       ])
     ],
-    incomes: [], expenses: []
+    incomes: [], expenses: [], loans: []
   };
 }
 function load() { try { const r = localStorage.getItem(STORE_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; } }
-const emptyState = () => ({ version: 1, settings: seed().settings, dismissed: {}, properties: [], incomes: [], expenses: [] });
+const emptyState = () => ({ version: 1, settings: seed().settings, dismissed: {}, properties: [], incomes: [], expenses: [], loans: [] });
 // 'cloud' = synced through the artifact database (all devices); 'local' = this browser only
 const inViewer = !!(window.claude && window.claude.use);
 let MODE = inViewer ? 'connecting' : 'local';
 let S = inViewer ? emptyState() : (load() || seed());
+S.loans = S.loans || [];
 let cloudReady = false;
 function save() {
   if (MODE === 'cloud') syncToCloud();
@@ -257,6 +260,7 @@ function docsOf(st) {
   st.properties.forEach((p, i) => m['properties/' + p.id] = Object.assign(clone(p), { order: i }));
   st.incomes.forEach(r => m['incomes/' + r.id] = clone(r));
   st.expenses.forEach(r => m['expenses/' + r.id] = clone(r));
+  (st.loans || []).forEach(r => m['loans/' + r.id] = clone(r));
   return m;
 }
 function stateOf(c) {
@@ -265,7 +269,7 @@ function stateOf(c) {
   return {
     version: 1, settings: Object.assign(seed().settings, meta.settings || {}), dismissed: meta.dismissed || {},
     properties: list('properties').sort((a, b) => (a.order || 0) - (b.order || 0)).map(p => { delete p.order; return p; }),
-    incomes: list('incomes'), expenses: list('expenses')
+    incomes: list('incomes'), expenses: list('expenses'), loans: list('loans')
   };
 }
 function setSync(state, msg) {
@@ -305,7 +309,7 @@ async function startCloud() {
   if (smp) { try { sampleImages = (await smp.limits()).images || null; } catch (e) { sampleImages = null; } }
   if (!db) { MODE = 'local'; S = load() || seed(); setSync('local', 'אין חיבור לענן – הנתונים נשמרים בדפדפן זה בלבד'); renderAll(); return; }
   dbApi = db;
-  const got = { meta: false, properties: false, incomes: false, expenses: false };
+  const got = { meta: false, properties: false, incomes: false, expenses: false, loans: false };
   const ready = () => {
     if (!Object.values(got).every(Boolean)) return;
     if (MODE !== 'cloud') { MODE = 'cloud'; setSync('ok'); }
@@ -316,7 +320,7 @@ async function startCloud() {
     if (!pending.has('meta/settings')) { if (d.exists) { cache['meta/settings'] = clone(d.data()); synced['meta/settings'] = JSON.stringify(cache['meta/settings']); } else { delete cache['meta/settings']; delete synced['meta/settings']; } }
     got.meta = true; ready();
   }, fail);
-  ['properties', 'incomes', 'expenses'].forEach(col => db.collection(col).limit(1000).onSnapshot(snap => { onRemote(col, snap); got[col] = true; ready(); }, fail));
+  ['properties', 'incomes', 'expenses', 'loans'].forEach(col => db.collection(col).limit(1000).onSnapshot(snap => { onRemote(col, snap); got[col] = true; ready(); }, fail));
 }
 
 /* ---------- In-page dialogs (the viewer blocks alert/confirm) ---------- */
@@ -380,9 +384,51 @@ function recordMonth(r, y, m) {
   return ym >= ym0 && ym <= ym1 ? num(r.amount) * per / 12 : 0;
 }
 const recordAnnual = (r, y) => MONTHS.reduce((s, m) => s + recordMonth(r, y, m), 0);
+/* ---------- Loans ---------- */
+const LOAN_FREQ = ['חודשי', 'רבעוני', 'חצי שנתי', 'שנתי'];
+const LOAN_TYPES = ['שפיצר', 'קרן שווה', 'בלון', 'גרייס', 'אחר'];
+const monthsBetween = (a, b) => (b.getFullYear() - a.getFullYear()) * 12 + b.getMonth() - a.getMonth();
+// Payment due in calendar month m of year y: from the first payment month to the last, every (12 / per-year) months
+function loanMonth(l, y, m) {
+  const per = FREQ_PER_YEAR[l.freq] || 12, step = 12 / per, first = parseDate(l.firstPayment || l.start);
+  if (!first || !num(l.payment)) return 0;
+  const d = monthsBetween(first, new Date(y, m, 1));
+  if (d < 0 || d % step) return 0;
+  const last = l.end ? parseDate(l.end) : null;
+  if (last && new Date(y, m, 1) > new Date(last.getFullYear(), last.getMonth(), 1)) return 0;
+  return num(l.payment);
+}
+const loanAnnual = (l, y) => MONTHS.reduce((s, m) => s + loanMonth(l, y, m), 0);
+// Number of payments over the loan's life and the regular payment of a Spitzer loan (annuity)
+function loanPeriods(l) {
+  const per = FREQ_PER_YEAR[l.freq] || 12, a = parseDate(l.firstPayment || l.start), b = parseDate(l.end);
+  return a && b ? Math.floor(monthsBetween(a, b) / (12 / per)) + 1 : 0;
+}
+function spitzerPayment(l) {
+  const per = FREQ_PER_YEAR[l.freq] || 12, n = loanPeriods(l), r = num(l.rate) / 100 / per, P = num(l.principal);
+  if (!n || !P) return 0;
+  return r ? P * r / (1 - Math.pow(1 + r, -n)) : P / n;
+}
+// Estimated outstanding principal today: a manual balance wins; else amortize Spitzer / equal-principal schedules
+function loanBalance(l) {
+  if (l.balance !== '' && l.balance != null && num(l.balance) > 0) return num(l.balance);
+  const per = FREQ_PER_YEAR[l.freq] || 12, step = 12 / per, first = parseDate(l.firstPayment || l.start), P = num(l.principal);
+  if (!first || !P) return P;
+  const now = today(), n = loanPeriods(l);
+  let k = now < first ? 0 : Math.floor(monthsBetween(first, now) / step) + 1;
+  if (n) k = Math.min(k, n);
+  const r = num(l.rate) / 100 / per;
+  if (n && k >= n) return 0;
+  if (l.type === 'בלון' || l.type === 'גרייס') return P;
+  if (l.type === 'קרן שווה' && n) return Math.max(0, P * (1 - k / n));
+  const pay = num(l.payment) || spitzerPayment(l);
+  if (!pay) return P;
+  const bal = r ? P * Math.pow(1 + r, k) - pay * (Math.pow(1 + r, k) - 1) / r : P - pay * k;
+  return Math.max(0, bal);
+}
 function totals(y, mo) {
-  const t = { area: 0, leasedArea: 0, parking: 0, units: 0, leased: 0, mRent: 0, mMgmt: 0, mOther: 0, mExp: 0, rentY: 0, otherY: 0, expY: 0, byProp: {} };
-  S.properties.forEach(p => t.byProp[p.id] = { inc: 0, exp: 0, incM: 0, expM: 0, area: 0, leasedArea: 0 });
+  const t = { area: 0, leasedArea: 0, parking: 0, units: 0, leased: 0, mRent: 0, mMgmt: 0, mOther: 0, mExp: 0, mLoan: 0, rentY: 0, otherY: 0, expY: 0, loanY: 0, byProp: {} };
+  S.properties.forEach(p => t.byProp[p.id] = { inc: 0, exp: 0, loan: 0, incM: 0, expM: 0, loanM: 0, area: 0, leasedArea: 0 });
   allUnits().forEach(({ p, u }) => {
     const b = t.byProp[p.id], a = num(u.area); t.area += a; t.parking += num(u.parking); t.units++; b.area += a;
     if (isLeased(u)) { t.leased++; t.leasedArea += a; b.leasedArea += a; }
@@ -391,6 +437,7 @@ function totals(y, mo) {
   });
   S.incomes.forEach(r => { const p = propById(r.propertyId), sh = p ? ownShare(p) : 1, v = recordAnnual(r, y) * sh, m = recordMonth(r, y, mo) * sh, b = t.byProp[r.propertyId]; t.otherY += v; t.mOther += m; if (b) { b.inc += v; b.incM += m; } });
   S.expenses.forEach(r => { const v = recordAnnual(r, y), m = recordMonth(r, y, mo), b = t.byProp[r.propertyId]; t.expY += v; t.mExp += m; if (b) { b.exp += v; b.expM += m; } });
+  (S.loans || []).forEach(l => { const v = loanAnnual(l, y), m = loanMonth(l, y, mo), b = t.byProp[l.propertyId]; t.loanY += v; t.mLoan += m; if (b) { b.loan += v; b.loanM += m; } });
   return t;
 }
 // Weighted average lease expiry (years), weighted by monthly rent
@@ -444,7 +491,7 @@ function renderAll() {
   $('#companyTitle').textContent = S.settings.company;
   const n = activeAlerts().length;
   $('#alertBadge').innerHTML = n ? `<span class="badge">${n}</span>` : '';
-  renderDashboard(); renderProperties(); renderFinance(); renderInvoices(); renderAlerts(); renderSettings();
+  renderDashboard(); renderProperties(); renderFinance(); renderLoans(); renderInvoices(); renderAlerts(); renderSettings();
   showTab(curTab);
 }
 
@@ -455,6 +502,11 @@ function stateBanner() {
     <label class="btn primary" style="margin:0">⬆ ייבוא גיבוי<input type="file" accept=".json" style="display:none" onchange="importJSON(this.files[0])"></label>
     <button class="btn" onclick="S=seed();save()">טען את רשימת הנכסים ההתחלתית</button></div>`;
   return '';
+}
+// Year picker shared by the dashboard, loans and invoices tabs
+function yearSelect() {
+  const ys = []; for (let i = new Date().getFullYear() - 3; i <= new Date().getFullYear() + 3; i++) ys.push(i);
+  return `<select style="width:auto" onchange="dashYear=+this.value;renderAll()">${ys.map(v => `<option ${v === dashYear ? 'selected' : ''}>${v}</option>`).join('')}</select>`;
 }
 /* ============================== Dashboard ============================== */
 function barChart(rows, opts = {}) {
@@ -471,11 +523,11 @@ function barChart(rows, opts = {}) {
 function renderDashboard() {
   const y = dashYear, mo = dashMonth, t = totals(y, mo), w = wale(), alerts = activeAlerts();
   const occ = t.area ? t.leasedArea / t.area * 100 : 0;
-  const incY = t.rentY + t.otherY, noi = incY - t.expY;
-  const incM = t.mRent + t.mMgmt + t.mOther, netM = incM - t.mExp, monthLbl = MONTH_NAMES[mo] + ' ' + y;
-  const monthly = MONTHS.map(m => { const x = totals(y, m); return { m, rent: x.mRent, mgmt: x.mMgmt, other: x.mOther, exp: x.mExp, net: x.mRent + x.mMgmt + x.mOther - x.mExp }; });
+  const incY = t.rentY + t.otherY, noi = incY - t.expY, fcfY = noi - t.loanY;
+  const debt = (S.loans || []).reduce((s, l) => s + loanBalance(l), 0);
+  const incM = t.mRent + t.mMgmt + t.mOther, netM = incM - t.mExp, fcfM = netM - t.mLoan, monthLbl = MONTH_NAMES[mo] + ' ' + y;
+  const monthly = MONTHS.map(m => { const x = totals(y, m); return { m, rent: x.mRent, mgmt: x.mMgmt, other: x.mOther, exp: x.mExp, loan: x.mLoan, net: x.mRent + x.mMgmt + x.mOther - x.mExp - x.mLoan }; });
   const mRows = monthly.map(r => ({ label: MONTH_NAMES[r.m], values: [r.rent + r.mgmt + r.other, r.exp] }));
-  const years = []; for (let i = new Date().getFullYear() - 3; i <= new Date().getFullYear() + 3; i++) years.push(i);
 
   const propRows = S.properties.map(p => ({ label: p.name, values: [t.byProp[p.id].incM] })).sort((a, b) => b.values[0] - a.values[0]);
   const ieRows = S.properties.map(p => ({ label: p.name, values: [t.byProp[p.id].inc, t.byProp[p.id].exp] }));
@@ -497,7 +549,7 @@ function renderDashboard() {
     <label style="margin:0">חודש</label>
     <select style="width:auto" onchange="dashMonth=+this.value;renderDashboard()">${MONTH_NAMES.map((n, i) => `<option value="${i}" ${i === mo ? 'selected' : ''}>${n}</option>`).join('')}</select>
     <label style="margin:0">שנה</label>
-    <select style="width:auto" onchange="dashYear=+this.value;renderAll()">${years.map(v => `<option ${v === y ? 'selected' : ''}>${v}</option>`).join('')}</select>
+    ${yearSelect()}
   </div>
   <div class="kpis">
     <div class="kpi"><div class="k">נכסים / יחידות</div><div class="v">${S.properties.length} / ${t.units}</div><div class="d">${t.leased} יחידות מושכרות</div></div>
@@ -505,9 +557,11 @@ function renderDashboard() {
     <div class="kpi"><div class="k">תפוסה (לפי שטח)</div><div class="v">${occ.toFixed(1)}%</div>
       <div class="meter" style="margin-top:6px" data-tip="מושכר ${fmt(t.leasedArea)} מ״ר · פנוי ${fmt(t.area - t.leasedArea)} מ״ר"><div style="width:${occ}%;background:var(--s1)"></div></div></div>
     <div class="kpi"><div class="k">הכנסה חודשית – ${monthLbl} (חלק החברה)</div><div class="v">${ils(incM)}</div><div class="d">שכ״ד ${ils(t.mRent)} · ניהול ${ils(t.mMgmt)} · נוספות ${ils(t.mOther)}</div></div>
-    <div class="kpi"><div class="k">נטו חודשי – ${monthLbl}</div><div class="v">${ils(netM)}</div><div class="d">הוצאות החודש ${ils(t.mExp)}</div></div>
+    <div class="kpi"><div class="k">תזרים חופשי – ${monthLbl}</div><div class="v" style="color:${fcfM < 0 ? 'var(--crit)' : 'inherit'}">${ils(fcfM)}</div><div class="d">אחרי הוצאות ${ils(t.mExp)} והלוואות ${ils(t.mLoan)}</div></div>
     <div class="kpi"><div class="k">הכנסות ${y}</div><div class="v">${fmtShort(incY)}</div><div class="d">מתוכן נוספות ${fmtShort(t.otherY)}</div></div>
     <div class="kpi"><div class="k">הוצאות ${y}</div><div class="v">${fmtShort(t.expY)}</div><div class="d">NOI: ${fmtShort(noi)}</div></div>
+    <div class="kpi"><div class="k">החזרי הלוואות ${y}</div><div class="v">${fmtShort(t.loanY)}</div><div class="d">יתרת חוב משוערת ${fmtShort(debt)}</div></div>
+    <div class="kpi"><div class="k">תזרים חופשי ${y}</div><div class="v" style="color:${fcfY < 0 ? 'var(--crit)' : 'inherit'}">${fmtShort(fcfY)}</div><div class="d">הכנסות − הוצאות − הלוואות</div></div>
     <div class="kpi"><div class="k">משך שכירות ממוצע (WALE)</div><div class="v">${w === null ? '—' : w.toFixed(1) + ' שנים'}</div><div class="d">משוקלל לפי שכ״ד</div></div>
     <div class="kpi"><div class="k">התראות פעילות</div><div class="v" style="color:${alerts.length ? 'var(--crit)' : 'var(--good-ink)'}">${alerts.length ? '⚠ ' : '✓ '}${alerts.length}</div><div class="d">בטווח ${S.settings.reminderDays} ימים</div></div>
   </div>
@@ -530,14 +584,14 @@ function renderDashboard() {
     </div>
   </div>
   <div class="card"><h2>טבלת סיכום לפי נכס – ${y}</h2><div class="tbl-wrap"><table>
-    <tr><th>נכס</th><th class="num">יחידות</th><th class="num">שטח מ״ר</th><th class="num">תפוסה</th><th class="num">הכנסה ${MONTH_NAMES[mo]}</th><th class="num">הכנסות שנתיות</th><th class="num">הוצאות שנתיות</th><th class="num">NOI</th></tr>
-    ${S.properties.map(p => { const b = t.byProp[p.id]; return `<tr><td>${esc(p.name)}</td><td class="num">${p.units.length}</td><td class="num">${fmt(b.area)}</td><td class="num">${b.area ? (b.leasedArea / b.area * 100).toFixed(0) : 0}%</td><td class="num">${ils(b.incM)}</td><td class="num">${ils(b.inc)}</td><td class="num">${ils(b.exp)}</td><td class="num">${ils(b.inc - b.exp)}</td></tr>`; }).join('')}
-    <tfoot><tr><td>סה״כ</td><td class="num">${t.units}</td><td class="num">${fmt(t.area)}</td><td class="num">${occ.toFixed(0)}%</td><td class="num">${ils(incM)}</td><td class="num">${ils(incY)}</td><td class="num">${ils(t.expY)}</td><td class="num">${ils(noi)}</td></tr></tfoot>
+    <tr><th>נכס</th><th class="num">יחידות</th><th class="num">שטח מ״ר</th><th class="num">תפוסה</th><th class="num">הכנסה ${MONTH_NAMES[mo]}</th><th class="num">הכנסות שנתיות</th><th class="num">הוצאות שנתיות</th><th class="num">NOI</th><th class="num">הלוואות</th><th class="num">תזרים חופשי</th></tr>
+    ${S.properties.map(p => { const b = t.byProp[p.id]; return `<tr><td>${esc(p.name)}</td><td class="num">${p.units.length}</td><td class="num">${fmt(b.area)}</td><td class="num">${b.area ? (b.leasedArea / b.area * 100).toFixed(0) : 0}%</td><td class="num">${ils(b.incM)}</td><td class="num">${ils(b.inc)}</td><td class="num">${ils(b.exp)}</td><td class="num">${ils(b.inc - b.exp)}</td><td class="num">${ils(b.loan)}</td><td class="num">${ils(b.inc - b.exp - b.loan)}</td></tr>`; }).join('')}
+    <tfoot><tr><td>סה״כ</td><td class="num">${t.units}</td><td class="num">${fmt(t.area)}</td><td class="num">${occ.toFixed(0)}%</td><td class="num">${ils(incM)}</td><td class="num">${ils(incY)}</td><td class="num">${ils(t.expY)}</td><td class="num">${ils(noi)}</td><td class="num">${ils(t.loanY)}</td><td class="num">${ils(fcfY)}</td></tr></tfoot>
   </table></div><div class="muted" style="margin-top:6px;font-size:12px">ההכנסות מחושבות לפי חלק החברה בכל נכס (אחוז הבעלות). הוצאות מוצגות בסכום המלא שהוזן. הכנסות ללא שיוך לנכס / הוצאות כלליות נכללות בסה״כ בלבד.</div></div>
   <div class="card"><h2>פירוט חודשי – ${y}</h2><div class="tbl-wrap"><table>
-    <tr><th>חודש</th><th class="num">שכ״ד</th><th class="num">דמי ניהול</th><th class="num">הכנסות נוספות</th><th class="num">סה״כ הכנסות</th><th class="num">הוצאות</th><th class="num">נטו</th></tr>
-    ${monthly.map(r => `<tr${r.m === mo ? ' style="font-weight:600"' : ''}><td>${MONTH_NAMES[r.m]}</td><td class="num">${ils(r.rent)}</td><td class="num">${ils(r.mgmt)}</td><td class="num">${ils(r.other)}</td><td class="num">${ils(r.rent + r.mgmt + r.other)}</td><td class="num">${ils(r.exp)}</td><td class="num">${ils(r.net)}</td></tr>`).join('')}
-    <tfoot><tr><td>סה״כ ${y}</td><td class="num">${ils(monthly.reduce((s, r) => s + r.rent, 0))}</td><td class="num">${ils(monthly.reduce((s, r) => s + r.mgmt, 0))}</td><td class="num">${ils(t.otherY)}</td><td class="num">${ils(incY)}</td><td class="num">${ils(t.expY)}</td><td class="num">${ils(noi)}</td></tr></tfoot>
+    <tr><th>חודש</th><th class="num">שכ״ד</th><th class="num">דמי ניהול</th><th class="num">הכנסות נוספות</th><th class="num">סה״כ הכנסות</th><th class="num">הוצאות</th><th class="num">הלוואות</th><th class="num">תזרים חופשי</th></tr>
+    ${monthly.map(r => `<tr${r.m === mo ? ' style="font-weight:600"' : ''}><td>${MONTH_NAMES[r.m]}</td><td class="num">${ils(r.rent)}</td><td class="num">${ils(r.mgmt)}</td><td class="num">${ils(r.other)}</td><td class="num">${ils(r.rent + r.mgmt + r.other)}</td><td class="num">${ils(r.exp)}</td><td class="num">${ils(r.loan)}</td><td class="num">${ils(r.net)}</td></tr>`).join('')}
+    <tfoot><tr><td>סה״כ ${y}</td><td class="num">${ils(monthly.reduce((s, r) => s + r.rent, 0))}</td><td class="num">${ils(monthly.reduce((s, r) => s + r.mgmt, 0))}</td><td class="num">${ils(t.otherY)}</td><td class="num">${ils(incY)}</td><td class="num">${ils(t.expY)}</td><td class="num">${ils(t.loanY)}</td><td class="num">${ils(fcfY)}</td></tr></tfoot>
   </table></div><div class="muted" style="margin-top:6px;font-size:12px">שכ״ד ודמי ניהול נספרים רק בחודשים שבין תחילת לסיום ההסכם (חודש חלקי – יחסי). הכנסה/הוצאה רבעונית או שנתית מחולקת לחודשים.</div></div>`;
 }
 
@@ -727,10 +781,69 @@ async function deleteRecord(kind, id) {
   S[key] = S[key].filter(x => x.id !== id); save();
 }
 
+/* ============================== Loans ============================== */
+function renderLoans() {
+  const y = dashYear, loans = S.loans || [];
+  const tot = { pay: 0, year: 0, bal: 0, principal: 0 };
+  const rows = loans.map(l => {
+    const yr = loanAnnual(l, y), bal = loanBalance(l), p = propById(l.propertyId);
+    tot.year += yr; tot.bal += bal; tot.principal += num(l.principal); tot.pay += loanMonth(l, y, dashMonth);
+    const left = daysUntil(l.end);
+    return `<tr><td><b>${esc(l.lender || '—')}</b>${l.number ? `<div class="muted">#${esc(l.number)}</div>` : ''}</td><td>${esc(p?.name || 'כללי')}</td><td>${esc(l.type)}${l.indexed ? '<div class="muted">צמוד מדד</div>' : ''}</td>
+      <td class="num">${ils(l.principal)}</td><td class="num">${num(l.rate) ? num(l.rate) + '%' : '—'}</td><td class="num">${ils(l.payment)}<div class="muted">${esc(l.freq)}</div></td>
+      <td>${fmtDate(l.firstPayment || l.start)}</td><td>${l.end ? statusPill(l.end) : '—'}${left !== null && left > 0 ? `<div class="muted">${Math.ceil(left / 30.4)} חודשים</div>` : ''}</td>
+      <td class="num">${ils(yr)}</td><td class="num">${ils(bal)}${l.balance !== '' && l.balance != null && num(l.balance) > 0 ? '' : '<div class="muted">משוער</div>'}</td>
+      <td style="white-space:nowrap"><button class="btn sm" onclick="editLoan('${l.id}')">✎</button><button class="btn sm danger" onclick="deleteLoan('${l.id}')">🗑</button></td></tr>`;
+  });
+  $('#tab-loans').innerHTML = `
+  <div class="row" style="margin-bottom:12px"><h2 style="margin:0;font-size:18px">הלוואות</h2><div class="spacer"></div><label style="margin:0">שנה</label>${yearSelect()}<button class="btn primary" onclick="editLoan()">+ הלוואה</button></div>
+  <div class="kpis">
+    <div class="kpi"><div class="k">מספר הלוואות</div><div class="v">${loans.length}</div><div class="d">סכום מקורי ${fmtShort(tot.principal)}</div></div>
+    <div class="kpi"><div class="k">יתרת חוב משוערת</div><div class="v">${fmtShort(tot.bal)}</div><div class="d">נכון להיום</div></div>
+    <div class="kpi"><div class="k">החזר ב${MONTH_NAMES[dashMonth]} ${y}</div><div class="v">${ils(tot.pay)}</div><div class="d">החודש שנבחר בדשבורד</div></div>
+    <div class="kpi"><div class="k">החזרים ב-${y}</div><div class="v">${fmtShort(tot.year)}</div><div class="d">נכנס לתזרים החופשי בדשבורד</div></div>
+  </div>
+  <div class="card">${loans.length ? `<div class="tbl-wrap"><table>
+    <tr><th>מלווה</th><th>נכס</th><th>סוג</th><th class="num">סכום הלוואה</th><th class="num">ריבית</th><th class="num">תשלום</th><th>תשלום ראשון</th><th>סיום</th><th class="num">החזרים ${y}</th><th class="num">יתרה</th><th></th></tr>
+    ${rows.join('')}
+    <tfoot><tr><td colspan="3">סה״כ</td><td class="num">${ils(tot.principal)}</td><td></td><td></td><td></td><td></td><td class="num">${ils(tot.year)}</td><td class="num">${ils(tot.bal)}</td><td></td></tr></tfoot></table></div>
+    <div class="muted" style="font-size:12px;margin-top:6px">היתרה מחושבת לפי לוח שפיצר / קרן שווה, אלא אם הוזנה יתרה ידנית. בהלוואה צמודה כדאי לעדכן את התשלום והיתרה לפי דוח הבנק.</div>`
+    : '<div class="empty">אין הלוואות. לחץ "+ הלוואה" כדי להוסיף.</div>'}</div>`;
+}
+function editLoan(id) {
+  const l = id ? (S.loans || []).find(x => x.id === id) : { id: uid(), lender: '', number: '', propertyId: '', type: 'שפיצר', principal: 0, rate: 0, indexed: false, freq: 'חודשי', start: new Date().toISOString().slice(0, 10), firstPayment: '', end: '', payment: 0, balance: '', notes: '' };
+  openModal(`<h2>${id ? 'עריכת הלוואה' : 'הלוואה חדשה'}</h2><form id="f"><div class="grid g2">
+    ${field('מלווה (בנק / גוף)', 'lender', l.lender, 'text', 'required')}${field('מספר הלוואה', 'number', l.number)}
+    <div><label>נכס</label><select name="propertyId">${propOptions(l.propertyId)}</select></div>${sel('סוג החזר', 'type', l.type, LOAN_TYPES)}
+    ${field('סכום ההלוואה ₪', 'principal', l.principal, 'number', 'step="any" min="0"')}${field('ריבית שנתית %', 'rate', l.rate, 'number', 'step="any" min="0"')}
+    ${sel('תדירות תשלום', 'freq', l.freq, LOAN_FREQ)}<div style="align-self:end">${chk('צמודה למדד', 'indexed', l.indexed)}</div>
+    ${field('תאריך קבלת ההלוואה', 'start', l.start, 'date')}${field('תאריך תשלום ראשון', 'firstPayment', l.firstPayment, 'date')}
+    ${field('תאריך תשלום אחרון', 'end', l.end, 'date')}
+    <div><label>תשלום לכל מועד ₪</label><div class="row" style="flex-wrap:nowrap"><input name="payment" type="number" step="any" min="0" value="${esc(l.payment)}"><button type="button" class="btn sm" onclick="calcLoanPayment()">חשב שפיצר</button></div></div>
+    ${field('יתרה נוכחית ₪ (לפי הבנק, לא חובה)', 'balance', l.balance, 'number', 'step="any" min="0"')}
+  </div><div style="margin-top:10px"><label>הערות</label><textarea name="notes">${esc(l.notes)}</textarea></div>
+  <div class="actions"><button class="btn primary">שמור</button><button type="button" class="btn" onclick="closeModal()">ביטול</button></div></form>`);
+  $('#f').onsubmit = e => {
+    e.preventDefault(); S.loans = S.loans || [];
+    const cur = id ? S.loans.find(x => x.id === id) : l; if (!cur) return closeModal();
+    const d = formData($('#f')); if (d.balance === 0) d.balance = '';
+    Object.assign(cur, d); if (!id) S.loans.push(cur); closeModal(); save();
+  };
+}
+function calcLoanPayment() {
+  const d = formData($('#f')), p = spitzerPayment(d);
+  if (!p) return toast('כדי לחשב צריך סכום, תאריך תשלום ראשון ותאריך תשלום אחרון');
+  $('#f [name=payment]').value = Math.round(p * 100) / 100;
+}
+async function deleteLoan(id) { const l = S.loans.find(x => x.id === id); if (await ask(`למחוק את ההלוואה "${l.lender}"?`)) { S.loans = S.loans.filter(x => x.id !== id); save(); } }
+
 /* ============================== Invoices ============================== */
 function renderInvoices() {
-  const withFiles = S.expenses.filter(r => r.fileId);
+  const withFiles = S.expenses.filter(r => r.fileId && (r.date || '').startsWith(String(dashYear)));
+  const invTot = withFiles.reduce((s, r) => s + num(r.amount), 0), invCat = {};
+  withFiles.forEach(r => invCat[r.type] = (invCat[r.type] || 0) + num(r.amount));
   $('#tab-invoices').innerHTML = `
+  <div class="row" style="margin-bottom:12px"><h2 style="margin:0;font-size:18px">חשבוניות הוצאה</h2><div class="spacer"></div><label style="margin:0">שנה</label>${yearSelect()}</div>
   <div class="card" id="scanCard">${scanCardHTML()}</div>
   <div class="card"><h2>טעינת חשבונית ידנית</h2>
     <form id="invForm"><div class="grid g4">
@@ -741,10 +854,12 @@ function renderInvoices() {
     </div><div class="actions" style="position:static"><button class="btn primary">שמור חשבונית</button></div></form>
     <div class="muted" style="font-size:12px;margin-top:6px">החשבונית נשמרת כהוצאה (חד פעמית) ומופיעה גם בלשונית הכנסות והוצאות. ${MODE === 'cloud' ? 'הקבצים נשמרים בענן וזמינים מכל מכשיר.' : 'הקבצים נשמרים בדפדפן זה בלבד ואינם נכללים בגיבוי JSON.'}</div>
   </div>
-  <div class="card"><h2>חשבוניות שנטענו (${withFiles.length})</h2>
+  <div class="card"><h2>חשבוניות שנטענו ב-${dashYear} (${withFiles.length}) · סה״כ ${ils(invTot)}</h2>
+    ${Object.keys(invCat).length ? `<div class="row" style="margin-bottom:10px">${Object.entries(invCat).sort((a, b) => b[1] - a[1]).map(([c, v]) => `<span class="pill neutral">${esc(c)}: ${ils(v)}</span>`).join('')}</div>` : ''}
     ${withFiles.length ? `<div class="tbl-wrap"><table><tr><th>תאריך</th><th>נכס</th><th>ספק</th><th>מס׳</th><th>קטגוריה</th><th class="num">סכום</th><th>קובץ</th><th></th></tr>
     ${withFiles.sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(r => `<tr><td>${fmtDate(r.date)}</td><td>${esc(propById(r.propertyId)?.name || 'כללי')}</td><td>${esc(r.supplier)}</td><td>${esc(r.invoiceNo)}</td><td>${esc(r.type)}</td><td class="num">${ils(r.amount)}</td>
-      <td>${fileLink(r, '📎 ' + esc(r.fileName))}</td><td><button class="btn sm danger" onclick="deleteRecord('exp','${r.id}')">🗑</button></td></tr>`).join('')}</table></div>` : '<div class="empty">טרם נטענו חשבוניות</div>'}
+      <td>${fileLink(r, '📎 ' + esc(r.fileName))}</td><td><button class="btn sm danger" onclick="deleteRecord('exp','${r.id}')">🗑</button></td></tr>`).join('')}
+    <tfoot><tr><td colspan="5">סה״כ ${dashYear}</td><td class="num">${ils(invTot)}</td><td colspan="2"></td></tr></tfoot></table></div>` : `<div class="empty">אין חשבוניות בשנת ${dashYear}</div>`}
   </div>`;
   $('#invForm').onsubmit = async e => {
     e.preventDefault();
@@ -1041,7 +1156,7 @@ function exportJSON() { download('arelis_backup.json', JSON.stringify(S, null, 2
 function importJSON(f) {
   if (!f) return;
   const r = new FileReader();
-  r.onload = () => { try { const d = JSON.parse(r.result); if (!d.properties) throw new Error('קובץ לא תקין'); ask('הייבוא יחליף את כל הנתונים הקיימים. להמשיך?').then(ok => { if (ok) { S = d; S.incomes = S.incomes || []; S.expenses = S.expenses || []; S.dismissed = S.dismissed || {}; save(); toast('הגיבוי יובא'); } }); } catch (e) { toast('שגיאה: ' + e.message); } };
+  r.onload = () => { try { const d = JSON.parse(r.result); if (!d.properties) throw new Error('קובץ לא תקין'); ask('הייבוא יחליף את כל הנתונים הקיימים. להמשיך?').then(ok => { if (ok) { S = d; S.incomes = S.incomes || []; S.expenses = S.expenses || []; S.loans = S.loans || []; S.dismissed = S.dismissed || {}; save(); toast('הגיבוי יובא'); } }); } catch (e) { toast('שגיאה: ' + e.message); } };
   r.readAsText(f);
 }
 function exportCSV() {
